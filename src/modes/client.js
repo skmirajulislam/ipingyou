@@ -55,7 +55,7 @@ async function resolveUID(uid) {
     }
 
     spinner.text = `Decrypting tunnel URL locally...`;
-    
+
     // Simulate decryption delay for effect
     await new Promise(r => setTimeout(r, 600));
 
@@ -111,7 +111,7 @@ async function connectSSH(username, hostname) {
   console.log('');
   console.log(chalk.bold('  🔗 Establishing SSH Connection'));
   console.log(chalk.dim('  ─────────────────────────────────'));
-  
+
   await showConnectionTrace('Local', 'Remote SSH');
 
   const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
@@ -178,7 +178,7 @@ async function performSCP(username, hostname, direction) {
   await showConnectionTrace('Local', 'Remote SCP');
 
   const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
-  
+
   // Construct SCP args
   const scpArgs = [
     '-r', // recursive just in case
@@ -193,24 +193,17 @@ async function performSCP(username, hostname, direction) {
   }
 
   try {
-    // We'll show an animation while SCP runs
     const transferSpinner = createSpinner(`Transferring via SCP...`, fileTransferSpinner).start();
-    
+
     const child = execa('scp', scpArgs, {
-      stdio: ['inherit', 'pipe', 'pipe'], // capture output to not break spinner unless needed
+      stdio: ['inherit', 'pipe', 'pipe'],
       reject: false,
     });
 
     trackPID(child.pid);
-
-    // If SCP needs a password prompt, it might get messed up by the spinner,
-    // but typically people use keys or interactive mode handles standard tty.
-    // If they need password, we should probably pause the spinner.
-    // To be safe and show colorful animation, we run it and wait.
-    
     const result = await child;
     untrackPID(child.pid);
-    
+
     transferSpinner.stop();
 
     if (result.exitCode === 0) {
@@ -238,7 +231,7 @@ export async function startClientMode() {
     {
       type: 'input',
       name: 'uid',
-      message: 'Enter the remote host\\'s UID:',
+      message: 'Enter the remote host\'s UID:',
       validate: (v) => {
         const trimmed = v.trim();
         if (trimmed.length < 6 || trimmed.length > 16) return 'UID must be 6-16 characters';
@@ -276,7 +269,6 @@ export async function startClientMode() {
     await performSCP(username, hostname, action);
   }
 
-  // Ask if they want to reconnect/do another action
   console.log('');
   const { reconnect } = await inquirer.prompt([
     {
@@ -286,10 +278,8 @@ export async function startClientMode() {
       default: false,
     },
   ]);
-  
+
   if (reconnect) {
-    // Simple loop for subsequent actions
-    // Could extract to a true while loop, but recursion is fine for CLI depth
     await handleSubsequentActions(username, hostname);
   }
 }
@@ -325,19 +315,8 @@ async function handleSubsequentActions(username, hostname) {
       default: false,
     },
   ]);
-  
+
   if (reconnect) {
     await handleSubsequentActions(username, hostname);
-  }
-}
-t to the same host?',
-        default: false,
-      },
-    ]);
-    if (reconnect) {
-      await connectSSH(username, hostname);
-    }
-  } catch {
-    // Ctrl+C during reconnect prompt — exit gracefully
   }
 }

@@ -90,7 +90,7 @@ async function spawnTunnel() {
   return new Promise((resolve, reject) => {
     const child = execa('cloudflared', ['tunnel', '--url', 'ssh://localhost:22'], {
       reject: false,
-      all: true, 
+      all: true,
     });
 
     trackPID(child.pid);
@@ -143,7 +143,7 @@ async function registerWithBroker(uid, tunnelUrl) {
     // Encrypt the tunnel URL LOCALLY before sending
     await new Promise(r => setTimeout(r, 600)); // animation effect
     const encrypted = encrypt(tunnelUrl);
-    
+
     spinner.text = 'Registering with broker...';
 
     const res = await fetch(`${BROKER_URL}/register`, {
@@ -166,7 +166,7 @@ async function registerWithBroker(uid, tunnelUrl) {
   } catch (err) {
     spinner.fail(`Broker registration failed: ${err.message}`);
     console.error(chalk.red(`  ❌ Error: ${err.message}`));
-    console.log(chalk.yellow('  ⚠️  Remote clients won\\'t be able to find you without the broker.'));
+    console.log(chalk.yellow('  ⚠️  Remote clients won\'t be able to find you without the broker.'));
     console.log(chalk.dim('     Share the tunnel URL directly if needed.'));
     return false;
   }
@@ -208,7 +208,7 @@ async function hostDashboard(uid, tunnelUrl) {
   console.log(`  ║  ${chalk.dim('Press Ctrl+C to terminate the session')}              ║`);
   console.log(chalk.bold('  ╚════════════════════════════════════════════════════╝'));
   console.log('');
-  
+
   await typeText(chalk.dim('  Listening for incoming connections...'), 30);
 
   const monitorInterval = setInterval(async () => {
@@ -313,24 +313,5 @@ export async function startHostMode() {
 
   setRevokeOnExit(uid, BROKER_URL);
 
-  await hostDashboard(uid, tunnel.url);
-}
-{err.message}`));
-    console.log(chalk.dim('     Make sure cloudflared is installed and in your PATH.'));
-    process.exit(1);
-  }
-
-  // 4. Encrypt & register with broker
-  const registered = await registerWithBroker(uid, tunnel.url);
-  if (!registered) {
-    console.error(chalk.red(`\n  ❌ FATAL: Could not register with broker at ${BROKER_URL}`));
-    console.log(chalk.dim('     Is the broker running? Try: npx ipingyou broker'));
-    process.exit(1);
-  }
-
-  // 5. Set up auto-revoke on exit
-  setRevokeOnExit(uid, BROKER_URL);
-
-  // 6. Dashboard
   await hostDashboard(uid, tunnel.url);
 }
