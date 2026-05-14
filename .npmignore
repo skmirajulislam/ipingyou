@@ -12,8 +12,7 @@ coverage/
 
 # Deployment / Server
 render.yaml
-# Uncomment the line below if you don't want to publish the broker server code
-# src/server.js 
+src/server.js 
 
 # Other local files
 .npmrc
