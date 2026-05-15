@@ -449,14 +449,12 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         }
 
         case 'exit':
-          clearInterval(monitorInterval);
           if (tunnelProcess) tunnelProcess.kill();
           if (chatTunnelProcess) chatTunnelProcess.kill();
           if (global.privateBrokerInstance) global.privateBrokerInstance.kill();
           return;
       }
     } catch (err) {
-      clearInterval(monitorInterval);
       throw err;
     }
   };
