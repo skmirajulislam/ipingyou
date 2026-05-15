@@ -15,7 +15,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "start": "node src/cli.js",
+    "start": "node src/server.js",
     "dev:cli": "node src/cli.js",
     "prepublishOnly": "node -e \"require('fs').accessSync('LICENSE')\" && node src/cli.js --help"
   },
@@ -50,7 +50,10 @@
     "open": "^11.0.0",
     "ora": "^8.1.1",
     "tree-kill": "^1.2.2",
-    "ws": "^8.20.1"
+    "ws": "^8.20.1",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.3.1",
+    "helmet": "^7.1.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
