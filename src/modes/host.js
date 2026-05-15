@@ -24,7 +24,6 @@ import { trackPID, untrackPID, setRevokeOnExit, addCleanupHook } from '../lib/cl
 import { detectOS } from '../lib/platform.js';
 import { createSpinner, cryptoSpinner, tunnelSpinner, networkSpinner, typeText } from '../lib/animations.js';
 import { startChatServer, openLocalChatUI } from '../lib/chat.js';
-import open from 'open';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -157,8 +156,7 @@ async function spawnTunnelSupervised(targetUrl, onUrlGenerated) {
 
 // ─── Ephemeral SSH Key Management ────────────────────────────
 async function generateEphemeralKey() {
-  const osInfo = detectOS();
-  const tmpDir = osInfo.isWindows ? process.env.TEMP : '/tmp';
+  const tmpDir = os.tmpdir();
   const keyPath = path.join(tmpDir, `ipingyou_${Date.now()}`);
   
   await execa('ssh-keygen', ['-t', 'ed25519', '-C', 'ipingyou-ephemeral', '-f', keyPath, '-N', '']);

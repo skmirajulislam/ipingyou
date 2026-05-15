@@ -21,7 +21,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { decrypt, encrypt } from '../lib/crypto.js';
 import { trackPID, untrackPID, addCleanupHook } from '../lib/cleanup.js';
-import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, animatedSteps, simulateTransferProgress } from '../lib/animations.js';
+import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, simulateTransferProgress } from '../lib/animations.js';
 import { getConfig, saveAlias } from '../lib/config.js';
 import open from 'open';
 
@@ -701,7 +701,7 @@ async function performReverseForward(username, hostname, privateKeyPath) {
   const spinner = createSpinner(`Forwarding Host:${remotePort} ➔ Localhost:${localPort}...`, networkSpinner).start();
 
   try {
-    const child = execa('ssh', sshArgs, { stdio: 'pipe' });
+    const child = execa('ssh', sshArgs, { stdio: 'inherit' });
     trackPID(child.pid);
     spinner.succeed(`Reverse tunnel active! Host can access your app at ${chalk.bold.green('localhost:' + remotePort)}`);
     console.log(chalk.dim('  Press Ctrl+C to terminate the reverse tunnel.'));

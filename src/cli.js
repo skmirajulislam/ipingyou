@@ -26,11 +26,7 @@ import { detectOS, checkDependencies } from './lib/platform.js';
 import { installShutdownHandlers, executePanicMode } from './lib/cleanup.js';
 import { startHostMode } from './modes/host.js';
 import { startClientMode } from './modes/client.js';
-import { execa } from 'execa';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ─── ASCII Banner ────────────────────────────────────────────
 function showBanner() {
