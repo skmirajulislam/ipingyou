@@ -6,6 +6,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { buildSshArgs, formatRemoteCd } from './ssh.js';
 
+class RemoteDirectoryError extends Error {
+  constructor(message, remoteDir, stderr = '') {
+    super(message);
+    this.name = 'RemoteDirectoryError';
+    this.remoteDir = remoteDir;
+    this.stderr = stderr;
+  }
+}
+
 function expandLocalPath(inputPath) {
   const trimmed = inputPath.trim();
   if (trimmed === '~') return os.homedir();
@@ -108,12 +117,13 @@ async function listRemoteDirectory(username, hostname, privateKeyPath, remoteDir
   sshArgs.push(`${username}@${hostname}`, command);
 
   const result = await execa('ssh', sshArgs, {
-    stdio: ['inherit', 'pipe', 'inherit'],
+    stdio: ['inherit', 'pipe', 'pipe'],
     reject: false,
   });
 
   if (result.exitCode !== 0) {
-    throw new Error('Remote directory listing failed');
+    const detail = result.stderr.trim() || `ssh exited with code ${result.exitCode}`;
+    throw new RemoteDirectoryError(`Remote directory listing failed: ${detail}`, remoteDir, result.stderr);
   }
 
   const lines = result.stdout.split(/\r?\n/).filter(Boolean);
@@ -176,6 +186,18 @@ export async function promptRemotePath(username, hostname, privateKeyPath, purpo
       listing = await listRemoteDirectory(username, hostname, privateKeyPath, currentDir);
     } catch (err) {
       console.log(chalk.yellow(`  ⚠️  Could not browse host files: ${err.message}`));
+      if (/Operation not permitted/i.test(err.stderr || err.message)) {
+        console.log(chalk.dim('     macOS privacy blocked this SSH session from listing that folder.'));
+        console.log(chalk.dim('     On the host, allow Full Disk Access for sshd/Remote Login, or choose a non-protected folder.'));
+      }
+
+      const parentDir = currentDir === '/' ? '/' : path.posix.dirname(currentDir);
+      if (parentDir && parentDir !== currentDir) {
+        console.log(chalk.dim(`     Returning to ${parentDir}.`));
+        currentDir = parentDir;
+        continue;
+      }
+
       console.log(chalk.dim('     Falling back to manual host path entry.'));
       const { remotePath } = await inquirer.prompt([{
         type: 'input',

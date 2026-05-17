@@ -42,6 +42,28 @@ async function promptUsername() {
   return username.trim();
 }
 
+function normalizePrivateKey(privateKey) {
+  const normalized = String(privateKey || '').replace(/\\n/g, '\n').replace(/\r\n/g, '\n');
+  return normalized.endsWith('\n') ? normalized : `${normalized}\n`;
+}
+
+async function writeEphemeralPrivateKey(privateKey) {
+  const keyPath = path.join(os.tmpdir(), `ipingyou_client_${Date.now()}`);
+  fs.writeFileSync(keyPath, normalizePrivateKey(privateKey), { mode: 0o600 });
+
+  const result = await execa('ssh-keygen', ['-y', '-f', keyPath], {
+    reject: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  if (result.exitCode !== 0) {
+    try { fs.unlinkSync(keyPath); } catch {}
+    throw new Error(result.stderr.trim() || 'OpenSSH could not parse the host-provided private key');
+  }
+
+  return keyPath;
+}
+
 /**
  * Start SSH connection through the Cloudflare tunnel.
  */
@@ -162,6 +184,7 @@ async function performSCP(username, hostname, direction, privateKeyPath) {
       if (direction === 'upload' && localHash) {
         console.log(chalk.dim('  🔍 Verifying remote SHA-256 checksum...'));
         try {
+          const remoteChecksumPath = joinRemotePath(remotePath, path.basename(localPath));
           const sshArgs = [
             '-o', `ProxyCommand=${proxyCommand}`,
             '-o', 'StrictHostKeyChecking=accept-new',
@@ -169,7 +192,7 @@ async function performSCP(username, hostname, direction, privateKeyPath) {
             ...getSshControlOptions(hostname)
           ];
           if (privateKeyPath) sshArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
-          sshArgs.push(`${username}@${hostname}`, `shasum -a 256 ${quoteRemoteShell(remotePath)} || sha256sum ${quoteRemoteShell(remotePath)}`);
+          sshArgs.push(`${username}@${hostname}`, `shasum -a 256 ${quoteRemoteShell(remoteChecksumPath)} 2>/dev/null || sha256sum ${quoteRemoteShell(remoteChecksumPath)} 2>/dev/null || shasum -a 256 ${quoteRemoteShell(remotePath)} 2>/dev/null || sha256sum ${quoteRemoteShell(remotePath)}`);
           
           const { stdout } = await execa('ssh', sshArgs, { reject: false });
           const remoteHash = stdout.split(' ')[0].trim();
@@ -196,6 +219,13 @@ async function performSCP(username, hostname, direction, privateKeyPath) {
   } catch (err) {
     console.error(chalk.red(`  ❌ SCP error: ${err.message}`));
   }
+}
+
+function joinRemotePath(parent, child) {
+  const cleanParent = String(parent || '').replace(/\/+$/, '');
+  if (!cleanParent) return child;
+  if (cleanParent === '/') return `/${child}`;
+  return `${cleanParent}/${child}`;
 }
 
 /**
@@ -334,11 +364,16 @@ export async function startClientMode(options = {}) {
   let privateKeyPath = null;
   if (payload.privateKey) {
     console.log(chalk.green('  🔑 Host provided an ephemeral SSH key for passwordless entry!'));
-    privateKeyPath = path.join(os.tmpdir(), `ipingyou_client_${Date.now()}`);
-    fs.writeFileSync(privateKeyPath, payload.privateKey, { mode: 0o600 });
-    addCleanupHook(() => {
-      try { fs.unlinkSync(privateKeyPath); } catch {}
-    });
+    try {
+      privateKeyPath = await writeEphemeralPrivateKey(payload.privateKey);
+      addCleanupHook(() => {
+        try { fs.unlinkSync(privateKeyPath); } catch {}
+      });
+    } catch (err) {
+      console.log(chalk.yellow(`  ⚠️  Could not use ephemeral SSH key: ${err.message}`));
+      console.log(chalk.dim('     Falling back to standard OS password.'));
+      privateKeyPath = null;
+    }
   }
 
   // Ask to save alias if we entered manually

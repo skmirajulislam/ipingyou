@@ -154,7 +154,7 @@ async function generateEphemeralKey() {
   
   await execa('ssh-keygen', ['-t', 'ed25519', '-C', 'ipingyou-ephemeral', '-f', keyPath, '-N', '']);
   
-  const privKey = (await fs.promises.readFile(keyPath, 'utf8')).trim();
+  const privKey = await fs.promises.readFile(keyPath, 'utf8');
   const pubKey = (await fs.promises.readFile(`${keyPath}.pub`, 'utf8')).trim();
   
   return { keyPath, privKey, pubKey };
