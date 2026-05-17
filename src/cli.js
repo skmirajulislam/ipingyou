@@ -29,6 +29,8 @@ import { detectOS, checkDependencies } from './lib/platform.js';
 import { cleanupAll, installShutdownHandlers, executePanicMode } from './lib/cleanup.js';
 import { startHostMode } from './modes/host.js';
 import { startClientMode } from './modes/client.js';
+import { startAIMode } from './modes/ai.js';
+import { startDoctorMode } from './modes/doctor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
@@ -112,6 +114,8 @@ function showRichHelp() {
   console.log(`    ${chalk.green('host')}    : Generates a secure session UID and exposes your local machine.`);
   console.log(`    ${chalk.blue('connect')} : Prompts for a UID to connect to a remote host.`);
   console.log(`              ${chalk.dim('Supports Interactive SSH Shell & SCP File Transfers')}`);
+  console.log(`    ${chalk.magenta('ai')}      : Groq-powered task assistant with guarded local/remote tools.`);
+  console.log(`    ${chalk.yellow('doctor')}  : Run diagnostics for dependencies, SSH, broker, SCP, AI, and tests.`);
   console.log('');
   
   console.log(chalk.bold.white('  🔒 Security Architecture:'));
@@ -132,6 +136,8 @@ function showRichHelp() {
   console.log(`    $ npx ipingyou                  ${chalk.dim('# Interactive wizard (Recommended)')}`);
   console.log(`    $ npx ipingyou host             ${chalk.dim('# Quick start as Host')}`);
   console.log(`    $ npx ipingyou connect          ${chalk.dim('# Quick start as Client')}`);
+  console.log(`    $ npx ipingyou ai               ${chalk.dim('# Start AI task assistant')}`);
+  console.log(`    $ npx ipingyou doctor           ${chalk.dim('# Diagnose local setup')}`);
   console.log(`    $ npx ipingyou panic            ${chalk.dim('# Self-destruct and wipe memory/traces')}`);
   console.log(`    $ npx ipingyou service install  ${chalk.dim('# Install Host mode as a background daemon')}`);
   console.log('');
@@ -192,6 +198,14 @@ async function interactiveMode() {
           name: `${chalk.blue('🌐 Access a Remote Machine')}  ${chalk.dim('— Connect to a host via their UID (SSH/SCP)')}`,
           value: 'client',
         },
+        {
+          name: `${chalk.magenta('🤖 AI Task Assistant')}  ${chalk.dim('— Use Groq LLMs with guarded local/remote tools')}`,
+          value: 'ai',
+        },
+        {
+          name: `${chalk.yellow('🩺 Run Doctor')}  ${chalk.dim('— Diagnose setup and project health')}`,
+          value: 'doctor',
+        },
         new inquirer.Separator(),
         {
           name: `${chalk.magenta('📖 Help / Information')}   ${chalk.dim('— Learn how iPingYou works')}`,
@@ -207,6 +221,12 @@ async function interactiveMode() {
       break;
     case 'client':
       await startClientMode();
+      break;
+    case 'ai':
+      await startAIMode();
+      break;
+    case 'doctor':
+      await startDoctorMode();
       break;
     case 'help':
       showRichHelp();
@@ -262,6 +282,40 @@ program
       await startClientMode({ uid: commandOptions.uid });
     } catch (err) {
       fatal('connect', err);
+    }
+  });
+
+program
+  .command('ai')
+  .description('Start AI mode — Groq-powered local/remote task assistant with guarded tools')
+  .action(async () => {
+    try {
+      const opts = program.opts();
+      if (opts.broker) process.env.BROKER_URL = opts.broker;
+
+      showBanner();
+      showSystemInfo();
+      installShutdownHandlers();
+      await startAIMode();
+    } catch (err) {
+      fatal('ai', err);
+    }
+  });
+
+program
+  .command('doctor')
+  .description('Run non-invasive diagnostics for dependencies, SSH, broker, SCP, AI, and tests')
+  .option('--full', 'Run full diagnostics, including broker integration if a local broker is running')
+  .action(async (commandOptions) => {
+    try {
+      const opts = program.opts();
+      if (opts.broker) process.env.BROKER_URL = opts.broker;
+
+      showBanner();
+      showSystemInfo();
+      await startDoctorMode({ full: commandOptions.full });
+    } catch (err) {
+      fatal('doctor', err);
     }
   });
 

@@ -146,7 +146,7 @@ async function listRemoteDirectory(username, hostname, privateKeyPath, remoteDir
   return { pwd, entries };
 }
 
-export async function promptRemotePath(username, hostname, privateKeyPath, purpose) {
+export async function promptRemotePath(username, hostname, privateKeyPath, purpose, startDir = '~') {
   const browseLabel = purpose === 'source'
     ? 'Browse host files interactively'
     : 'Browse host folders interactively';
@@ -179,7 +179,7 @@ export async function promptRemotePath(username, hostname, privateKeyPath, purpo
     return remotePath.trim();
   }
 
-  let currentDir = '~';
+  let currentDir = startDir || '~';
   while (true) {
     let listing;
     try {

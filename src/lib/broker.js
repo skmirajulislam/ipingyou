@@ -33,6 +33,8 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
         iv: encrypted.iv,
         ciphertext: encrypted.ciphertext,
         salt: encrypted.salt,
+        approvalRequired: Boolean(serviceConfig.approvalRequired),
+        oneTime: Boolean(serviceConfig.oneTimeSharePath),
       }),
     });
 
@@ -52,11 +54,62 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
   }
 }
 
-export async function resolveUID(brokerUrl, uid, password, silent = false) {
+export async function requestHostApproval(brokerUrl, uid, password, details) {
+  const encrypted = encrypt(JSON.stringify(details), password);
+  const res = await fetch(`${brokerUrl}/approval-request/${uid}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(encrypted),
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function waitForApproval(brokerUrl, uid, requestId, timeoutMs = 300000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const res = await fetch(`${brokerUrl}/approval-status/${uid}/${requestId}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.status === 'approved') return true;
+      if (data.status === 'denied') return false;
+    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+  }
+  throw new Error('Timed out waiting for host approval');
+}
+
+export async function fetchApprovalRequests(brokerUrl, uid) {
+  const res = await fetch(`${brokerUrl}/approval-requests/${uid}`);
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function decideApprovalRequest(brokerUrl, uid, requestId, decision) {
+  const res = await fetch(`${brokerUrl}/approval-requests/${uid}/${requestId}/${decision}`, { method: 'POST' });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function revokeUID(brokerUrl, uid) {
+  await fetch(`${brokerUrl}/revoke/${uid}`, { method: 'DELETE' }).catch(() => {});
+}
+
+export async function resolveUID(brokerUrl, uid, password, silent = false, requestId = null) {
   const spinner = !silent ? createSpinner(`Resolving UID ${chalk.cyan(uid)}...`, networkSpinner).start() : null;
 
   try {
-    const res = await fetch(`${brokerUrl}/resolve/${uid}`);
+    const suffix = requestId ? `?requestId=${encodeURIComponent(requestId)}` : '';
+    const res = await fetch(`${brokerUrl}/resolve/${uid}${suffix}`);
 
     if (res.status === 404) {
       if (spinner) spinner.fail('UID not found — the host may not be online or the session expired');
@@ -66,6 +119,11 @@ export async function resolveUID(brokerUrl, uid, password, silent = false) {
     if (res.status === 410) {
       if (spinner) spinner.fail('UID has expired — ask the host for a new session');
       else console.error(chalk.red('  ❌ UID expired.'));
+      return null;
+    }
+    if (res.status === 423) {
+      if (spinner) spinner.fail('Host approval is required before this session can be resolved');
+      else console.error(chalk.red('  ❌ Host approval required.'));
       return null;
     }
     if (!res.ok) {
@@ -115,7 +173,7 @@ export async function resolveUID(brokerUrl, uid, password, silent = false) {
   }
 }
 
-export async function pushTelemetry(brokerUrl, uid, password, username) {
+export async function pushTelemetry(brokerUrl, uid, password, username, action = 'connected') {
   try {
     let publicIp = 'Unknown';
     try {
@@ -128,6 +186,7 @@ export async function pushTelemetry(brokerUrl, uid, password, username) {
       os: `${os.type()} ${os.release()} (${os.arch()})`,
       cpu: os.cpus()[0]?.model || 'Unknown CPU',
       ram: `${Math.round(os.totalmem() / 1024 / 1024 / 1024)} GB`,
+      action,
       time: new Date().toLocaleTimeString()
     };
 

@@ -54,8 +54,11 @@ try {
   const decipher = crypto.createDecipheriv('aes-256-cbc', wrongKey, iv);
   let dec = decipher.update(encrypted.ciphertext, 'base64', 'utf8');
   dec += decipher.final('utf8');
-  console.log('   ❌ FAIL — wrong key should not decrypt');
-  process.exit(1);
+  if (dec === tunnelUrl) {
+    console.log('   ❌ FAIL — wrong key decrypted to original plaintext');
+    process.exit(1);
+  }
+  console.log('   ✅ PASS — wrong key did not recover original plaintext');
 } catch (err) {
   console.log('   ✅ PASS — wrong key throws:', err.message);
 }

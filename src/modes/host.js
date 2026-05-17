@@ -27,7 +27,8 @@ import { detectOS } from '../lib/platform.js';
 import { createSpinner, networkSpinner, typeText } from '../lib/animations.js';
 import { startChatServer, openLocalChatUI } from '../lib/chat.js';
 import { spawnTunnelSupervised } from '../lib/tunnel.js';
-import { pingBroker, registerWithBroker } from '../lib/broker.js';
+import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID } from '../lib/broker.js';
+import { recordEvent } from '../lib/session-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -151,12 +152,12 @@ async function generateEphemeralKey() {
     throw new Error('Could not resolve a temporary directory for SSH key generation');
   }
   const keyPath = path.join(tmpDir, `ipingyou_${Date.now()}`);
-  
+
   await execa('ssh-keygen', ['-t', 'ed25519', '-C', 'ipingyou-ephemeral', '-f', keyPath, '-N', '']);
-  
+
   const privKey = await fs.promises.readFile(keyPath, 'utf8');
   const pubKey = (await fs.promises.readFile(`${keyPath}.pub`, 'utf8')).trim();
-  
+
   return { keyPath, privKey, pubKey };
 }
 
@@ -167,11 +168,11 @@ async function injectPublicKey(pubKey) {
   }
 
   const sshDir = path.join(homedir, '.ssh');
-  
+
   if (!fs.existsSync(sshDir)) {
     await fs.promises.mkdir(sshDir, { mode: 0o700, recursive: true });
   }
-  
+
   const authKeysPath = path.join(sshDir, 'authorized_keys');
   await fs.promises.appendFile(authKeysPath, `\n${pubKey}\n`);
   return authKeysPath;
@@ -185,12 +186,137 @@ async function removePublicKey(authKeysPath, pubKey) {
   }
 }
 
+async function prepareSharedDropFolder(uid) {
+  const dropPath = path.join(os.homedir(), `ipingyou-dropbox-${uid}`);
+  await fs.promises.mkdir(dropPath, { recursive: true, mode: 0o700 });
+  try { await fs.promises.chmod(dropPath, 0o700); } catch { }
+  return dropPath;
+}
+
+function showMacPrivacyPreflight(sharedDropPath) {
+  if (process.platform !== 'darwin') return;
+
+  console.log('');
+  console.log(chalk.bold.cyan('  🔎 macOS SSH File Access Preflight'));
+  console.log(chalk.dim('  ──────────────────────────────────────'));
+  console.log(chalk.dim('  macOS may block SSH sessions from browsing Downloads, Desktop, or Documents.'));
+  console.log(chalk.dim('  For reliable SCP transfers, use the session drop folder:'));
+  console.log(chalk.green(`  ${sharedDropPath}`));
+  console.log(chalk.dim('  To browse protected folders over SSH, grant Full Disk Access to sshd/Remote Login.'));
+  console.log('');
+}
+
+async function promptOneTimeSharePath() {
+  const { sharePath } = await inquirer.prompt([{
+    type: 'input',
+    name: 'sharePath',
+    message: 'Local file/folder to share one time:',
+    validate: value => {
+      const trimmed = value.trim();
+      if (!trimmed) return 'Required';
+      const expanded = trimmed === '~' ? os.homedir() : trimmed.replace(/^~(?=\/)/, os.homedir());
+      return fs.existsSync(expanded) || 'Path does not exist';
+    },
+  }]);
+  return sharePath.trim() === '~' ? os.homedir() : sharePath.trim().replace(/^~(?=\/)/, os.homedir());
+}
+
+async function startLocalHostDashboard(uid, password, serviceConfig) {
+  const { default: express } = await import('express');
+  const { default: open } = await import('open');
+  const app = express();
+  const startedAt = new Date().toISOString();
+
+  app.get('/api/status', (_req, res) => {
+    res.json({
+      uid,
+      startedAt,
+      service: serviceConfig.type,
+      port: serviceConfig.port,
+      approvalRequired: Boolean(serviceConfig.approvalRequired),
+      sharedDropPath: serviceConfig.sharedDropPath || null,
+      oneTimeSharePath: serviceConfig.oneTimeSharePath || null,
+      chatUrl: serviceConfig.chatUrl ? '[configured]' : null,
+    });
+  });
+
+  app.use(express.json());
+
+  // Server-Sent Events for live telemetry & approvals
+  app.get('/api/events', async (req, res) => {
+    res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+    res.flushHeaders?.();
+
+    let closed = false;
+    const push = async () => {
+      if (closed) return;
+      try {
+        const approvals = await fetchApprovalRequests(BROKER_URL, uid).catch(() => ({ approvals: [] }));
+        res.write(`event: approvals\n`);
+        res.write(`data: ${JSON.stringify(approvals)}\n\n`);
+      } catch { }
+    };
+
+    const iv = setInterval(push, 3000);
+    req.on('close', () => { clearInterval(iv); closed = true; });
+    // send initial payload
+    await push();
+  });
+
+  app.post('/api/approval', async (req, res) => {
+    const { requestId, decision } = req.body || {};
+    if (!requestId || !decision) return res.status(400).json({ error: 'requestId and decision required' });
+    try {
+      await decideApprovalRequest(BROKER_URL, uid, requestId, decision);
+      recordEvent('approval_decision', { uid, requestId, decision, via: 'dashboard' });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/revoke', async (_req, res) => {
+    try {
+      await revokeUID(BROKER_URL, uid);
+      recordEvent('uid_revoked', { uid, via: 'dashboard' });
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/', (_req, res) => {
+    res.type('html').send(`<!doctype html>
+<html><head><meta charset="utf-8"><title>iPingYou Host Dashboard</title>
+<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:32px;line-height:1.5;color:#17202a}code{background:#f2f4f7;padding:2px 6px;border-radius:4px}.card{border:1px solid #d0d5dd;border-radius:8px;padding:16px;max-width:760px}</style></head>
+<body><h1>iPingYou Host Dashboard</h1><div class="card">
+<p><strong>UID:</strong> <code>${uid}</code></p>
+<p><strong>Password:</strong> <code>${password}</code></p>
+<p><strong>Service:</strong> ${serviceConfig.type} on port ${serviceConfig.port}</p>
+<p><strong>Approval gate:</strong> ${serviceConfig.approvalRequired ? 'enabled' : 'disabled'}</p>
+<p><strong>Drop folder:</strong> <code>${serviceConfig.sharedDropPath || 'none'}</code></p>
+<p><strong>One-time share:</strong> <code>${serviceConfig.oneTimeSharePath || 'none'}</code></p>
+<p>Use the terminal host controls to approve clients, start chat, mirror sessions, or revoke.</p>
+</div></body></html>`);
+  });
+
+  return new Promise((resolve) => {
+    const server = app.listen(0, '127.0.0.1', async () => {
+      const port = server.address().port;
+      const url = `http://127.0.0.1:${port}`;
+      console.log(chalk.green(`  ✓ Local dashboard: ${url}`));
+      try { await open(url); } catch { }
+      resolve({ url, close: () => server.close() });
+    });
+  });
+}
+
 /**
  * Auto-spawn a Private Broker locally and wrap it in a Cloudflare tunnel.
  */
 async function spawnPrivateBroker() {
   console.log(chalk.yellow('\n  ⚠️  Public Broker is unreachable. Spawning Private Broker...'));
-  
+
   // 1. Spawn the broker server process
   const brokerProcess = execa('node', [path.join(__dirname, '../server.js')], {
     env: { ...process.env, PORT: '4040' },
@@ -222,7 +348,7 @@ async function spawnPrivateBroker() {
   }, 30000, 'Private broker tunnel startup');
 
   console.log(chalk.green(`  ✅ Private Broker Active: ${chalk.bold.cyan(brokerTunnelUrl)}\n`));
-  
+
   return {
     url: brokerTunnelUrl,
     kill: () => {
@@ -240,6 +366,7 @@ async function spawnPrivateBroker() {
 async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProcess) {
   let chatServerInstance = null;
   let chatTunnelProcess = null;
+  let dashboardInstance = null;
 
   const renderDashboard = () => {
     console.clear();
@@ -254,6 +381,10 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
     if (serviceConfig.chatUrl) {
       console.log(`  ║  ${chalk.cyan('Chat URL:')}   ${chalk.dim(serviceConfig.chatUrl.substring(0, 40))}  ║`);
     }
+    if (serviceConfig.sharedDropPath) {
+      console.log(`  ║  ${chalk.cyan('Drop Box:')}   ${chalk.dim(serviceConfig.sharedDropPath.substring(0, 40))}  ║`);
+    }
+    console.log(`  ║  ${chalk.cyan('Approval:')}   ${serviceConfig.approvalRequired ? chalk.green('Required').padEnd(39) : chalk.dim('Not required').padEnd(39)}║`);
     console.log(`  ║  ${chalk.cyan('Broker:')}     ${chalk.dim(BROKER_URL.substring(0, 40))}  ║`);
     console.log(`  ║  ${chalk.cyan('Crypto:')}     ${chalk.green('AES-256-CBC E2E (PBKDF2)')}             ║`);
     console.log(chalk.bold('  ╠════════════════════════════════════════════════════╣'));
@@ -270,6 +401,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
   const waitForAction = async () => {
     try {
       const choices = [
+        { name: '✅ Review pending client approvals', value: 'approvals' },
         { name: '📡 See detailed client telemetry', value: 'show' },
         { name: '📺 Mirror Client Terminal (requires tmux)', value: 'mirror' },
         { name: '🔄 Re-register with broker', value: 'reregister' }
@@ -279,6 +411,11 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         choices.push({ name: '💬 Start Real-time Chat Room', value: 'chat' });
       } else {
         choices.push({ name: '💬 Re-open Chat Room in Browser', value: 'reopen_chat' });
+      }
+      if (!dashboardInstance) {
+        choices.push({ name: '🌐 Open Local Web Dashboard', value: 'dashboard' });
+      } else {
+        choices.push({ name: '🌐 Show Local Web Dashboard URL', value: 'dashboard_url' });
       }
 
       choices.push(
@@ -296,17 +433,61 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
       ]);
 
       switch (action) {
+        case 'approvals': {
+          try {
+            const data = await fetchApprovalRequests(BROKER_URL, uid);
+            const pending = (data.approvals || []).filter(item => item.status === 'pending');
+            if (pending.length === 0) {
+              console.log(chalk.yellow('  No pending approval requests.'));
+              return waitForAction();
+            }
+
+            for (const request of pending) {
+              let details = {};
+              try {
+                details = JSON.parse(decrypt(request.iv, request.ciphertext, password, request.salt));
+              } catch {
+                details = { error: 'Could not decrypt request metadata' };
+              }
+              console.log('');
+              console.log(chalk.bold.cyan(`  Approval Request ${request.id}`));
+              console.log(`    User:   ${details.username || 'unknown'}`);
+              console.log(`    Host:   ${details.hostname || 'unknown'}`);
+              console.log(`    OS:     ${details.os || 'unknown'}`);
+              console.log(`    Intent: ${details.intent || 'connect'}`);
+
+              const { decision } = await inquirer.prompt([{
+                type: 'list',
+                name: 'decision',
+                message: 'Decision:',
+                choices: [
+                  { name: 'Approve', value: 'approved' },
+                  { name: 'Deny', value: 'denied' },
+                  { name: 'Skip', value: 'skip' },
+                ],
+              }]);
+              if (decision !== 'skip') {
+                await decideApprovalRequest(BROKER_URL, uid, request.id, decision);
+                recordEvent('approval_decision', { uid, requestId: request.id, decision, username: details.username });
+              }
+            }
+          } catch (err) {
+            console.log(chalk.red(`  Could not review approvals: ${err.message}`));
+          }
+          return waitForAction();
+        }
+
         case 'chat': {
           console.log(chalk.dim('\n  Starting chat server...'));
           chatServerInstance = await startChatServer(async () => {
-             if (chatTunnelProcess) {
-               chatTunnelProcess.kill();
-               chatTunnelProcess = null;
-               chatServerInstance = null;
-               delete serviceConfig.chatUrl;
-               await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
-               renderDashboard();
-             }
+            if (chatTunnelProcess) {
+              chatTunnelProcess.kill();
+              chatTunnelProcess = null;
+              chatServerInstance = null;
+              delete serviceConfig.chatUrl;
+              await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+              renderDashboard();
+            }
           });
 
           console.log(chalk.dim('  Provisioning Cloudflare tunnel for chat...'));
@@ -323,6 +504,16 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           return waitForAction();
         }
 
+        case 'dashboard': {
+          dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig);
+          return waitForAction();
+        }
+
+        case 'dashboard_url': {
+          console.log(chalk.green(`  Dashboard: ${dashboardInstance.url}`));
+          return waitForAction();
+        }
+
         case 'reopen_chat': {
           if (chatServerInstance) await openLocalChatUI(chatServerInstance.port, password);
           return waitForAction();
@@ -335,7 +526,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           console.log(chalk.dim('  Attaching to the tmux session created by an interactive SSH client.'));
           console.log(chalk.dim('  Press Ctrl+b then d to detach gracefully.'));
           console.log('');
-          
+
           try {
             await execaCommand('tmux -V', { reject: true });
             const sessionCheck = await execa('tmux', ['has-session', '-t', 'SecureLink_Session'], { reject: false });
@@ -360,31 +551,32 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
             const res = await fetch(`${BROKER_URL}/clients/${uid}`);
             if (!res.ok) throw new Error('Failed to fetch from broker');
             const data = await res.json();
-            
+
             if (!data.clients || data.clients.length === 0) {
               spinner.warn('No clients have successfully connected and sent telemetry yet.');
             } else {
               spinner.succeed(`Found ${data.clients.length} recent connection(s):`);
-              
+
               data.clients.forEach((clientBlob, i) => {
                 try {
                   // Decrypt using the unique salt the client generated for this payload
                   const decrypted = decrypt(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
                   const t = JSON.parse(decrypted);
-                  
-                  console.log(chalk.bold.blue(`\n  Client #${i+1} (${t.username})`));
+
+                  console.log(chalk.bold.blue(`\n  Client #${i + 1} (${t.username})`));
                   console.log(`    IP:       ${chalk.white(t.ip)}`);
                   console.log(`    OS:       ${chalk.dim(t.os)}`);
                   console.log(`    CPU:      ${chalk.dim(t.cpu)}`);
                   console.log(`    RAM:      ${chalk.dim(t.ram)}`);
+                  console.log(`    Action:   ${chalk.yellow(t.action || 'connected')}`);
                   console.log(`    Time:     ${chalk.dim(t.time)}`);
                 } catch (e) {
-                  console.log(chalk.yellow(`\n  Client #${i+1}: Payload decryption failed (wrong password or corrupted).`));
+                  console.log(chalk.yellow(`\n  Client #${i + 1}: Payload decryption failed (wrong password or corrupted).`));
                 }
               });
             }
           } catch (e) {
-             spinner.fail('Could not reach broker.');
+            spinner.fail('Could not reach broker.');
           }
           console.log('');
           return waitForAction();
@@ -411,6 +603,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         }
 
         case 'exit':
+          if (dashboardInstance) dashboardInstance.close();
           if (chatTunnelProcess) chatTunnelProcess.kill();
           if (global.privateBrokerInstance) global.privateBrokerInstance.kill();
           if (tunnelProcess) tunnelProcess.kill();
@@ -473,7 +666,7 @@ export async function startHostMode() {
   if (!global.privateBrokerInstance) {
     const spinner = createSpinner(`Checking broker status at ${BROKER_URL}...`, networkSpinner).start();
     const brokerOnline = await pingBroker(BROKER_URL);
-    
+
     if (brokerOnline) {
       spinner.succeed(`Broker is online ${chalk.dim(`(${BROKER_URL})`)}`);
     } else {
@@ -504,6 +697,7 @@ export async function startHostMode() {
       message: 'What service do you want to expose?',
       choices: [
         { name: '🖥️  SSH (Port 22)', value: 'ssh' },
+        { name: '📦 One-Time File Share (SCP over SSH)', value: 'share' },
         { name: '🌐 Web/HTTP (Custom Port)', value: 'http' },
         { name: '🔌 Custom TCP Port (e.g. Database, RDP, VNC)', value: 'tcp' }
       ]
@@ -513,7 +707,10 @@ export async function startHostMode() {
   let targetPort = 22;
   let protocol = 'ssh';
 
-  if (serviceType === 'http') {
+  if (serviceType === 'share') {
+    targetPort = 22;
+    protocol = 'ssh';
+  } else if (serviceType === 'http') {
     const ans = await inquirer.prompt([{ name: 'port', message: 'Enter local HTTP port (e.g. 3000):', default: '3000' }]);
     targetPort = ans.port;
     protocol = 'http';
@@ -523,24 +720,47 @@ export async function startHostMode() {
     protocol = 'tcp';
   }
 
-  const serviceConfig = { type: serviceType, port: targetPort, protocol };
+  const serviceConfig = { type: serviceType === 'share' ? 'ssh' : serviceType, port: targetPort, protocol };
   const targetUrl = `${protocol}://localhost:${targetPort}`;
 
-  if (serviceType === 'ssh') {
+  if (serviceType === 'ssh' || serviceType === 'share') {
     await ensureSSHRunning();
     await ensureTmuxInstalled();
+
+    try {
+      serviceConfig.sharedDropPath = await prepareSharedDropFolder(uid);
+      console.log(chalk.green(`  ✓ Shared drop folder ready: ${serviceConfig.sharedDropPath}`));
+      showMacPrivacyPreflight(serviceConfig.sharedDropPath);
+    } catch (err) {
+      console.log(chalk.yellow(`  ⚠️  Could not prepare shared drop folder: ${err.message}`));
+    }
+
+    if (serviceType === 'share') {
+      serviceConfig.oneTimeSharePath = await promptOneTimeSharePath();
+      serviceConfig.oneTime = true;
+      console.log(chalk.green(`  ✓ One-time share selected: ${serviceConfig.oneTimeSharePath}`));
+    }
+
+    const { approvalRequired } = await inquirer.prompt([{
+      type: 'confirm',
+      name: 'approvalRequired',
+      message: 'Require host approval before clients receive tunnel/key material?',
+      default: serviceType !== 'share',
+    }]);
+    serviceConfig.approvalRequired = approvalRequired;
+
     console.log(chalk.dim('  🔑 Generating ephemeral SSH key for passwordless entry...'));
     try {
       const ephemeralKey = await generateEphemeralKey();
       const authKeysPath = await injectPublicKey(ephemeralKey.pubKey);
-      
+
       serviceConfig.privateKey = ephemeralKey.privKey;
-      
+
       addCleanupHook(async () => {
         console.log(chalk.dim('     Removing ephemeral public key...'));
         await removePublicKey(authKeysPath, ephemeralKey.pubKey);
-        try { await fs.promises.unlink(ephemeralKey.keyPath); } catch {}
-        try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch {}
+        try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
+        try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
       });
       console.log(chalk.green('  ✓ Ephemeral key injected. Client will connect without system password!'));
     } catch (err) {

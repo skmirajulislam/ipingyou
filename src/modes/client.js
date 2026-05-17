@@ -21,11 +21,12 @@ import os from 'node:os';
 import { cleanupAll, trackPID, untrackPID, addCleanupHook } from '../lib/cleanup.js';
 import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, simulateTransferProgress } from '../lib/animations.js';
 import { getConfig, saveAlias } from '../lib/config.js';
-import { pushTelemetry, resolveUID } from '../lib/broker.js';
+import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval } from '../lib/broker.js';
 import { calculateChecksum } from '../lib/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
 import { buildSshArgs, extractHostname, formatScpRemotePath, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
 import open from 'open';
+import { recordEvent } from '../lib/session-log.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
 
@@ -57,7 +58,7 @@ async function writeEphemeralPrivateKey(privateKey) {
   });
 
   if (result.exitCode !== 0) {
-    try { fs.unlinkSync(keyPath); } catch {}
+    try { fs.unlinkSync(keyPath); } catch { }
     throw new Error(result.stderr.trim() || 'OpenSSH could not parse the host-provided private key');
   }
 
@@ -100,12 +101,15 @@ async function connectSSH(username, hostname, privateKeyPath) {
     if (result.exitCode === 0) {
       console.log('');
       console.log(chalk.green('  ✅ SSH session ended cleanly'));
+      recordEvent('ssh_session_ended', { hostname, exitCode: 0 });
     } else if (result.exitCode === 255) {
       console.log('');
       console.error(chalk.red('  ❌ SSH connection failed (exit code 255)'));
+      recordEvent('ssh_session_failed', { hostname, exitCode: 255 });
     } else {
       console.log('');
       console.error(chalk.red(`  ❌ SSH exited with code ${result.exitCode}`));
+      recordEvent('ssh_session_ended', { hostname, exitCode: result.exitCode });
     }
   } catch (err) {
     console.error(chalk.red(`  ❌ SSH error: ${err.message}`));
@@ -115,7 +119,48 @@ async function connectSSH(username, hostname, privateKeyPath) {
 /**
  * Perform an SCP file transfer through the Cloudflare tunnel.
  */
-async function performSCP(username, hostname, direction, privateKeyPath) {
+async function chooseRemoteTransferPath(username, hostname, privateKeyPath, direction, sharedDropPath) {
+  if (!sharedDropPath) {
+    return promptRemotePath(username, hostname, privateKeyPath, direction === 'upload' ? 'destination' : 'source');
+  }
+
+  const { dropChoice } = await inquirer.prompt([{
+    type: 'list',
+    name: 'dropChoice',
+    message: direction === 'upload'
+      ? 'Where should the file/folder go on the host?'
+      : 'Where should browsing start on the host?',
+    choices: direction === 'upload'
+      ? [
+        { name: `📥 Use host shared drop folder (${sharedDropPath})`, value: 'drop' },
+        { name: '🔍 Browse host folders', value: 'browse' },
+        { name: '⌨️  Type host destination path manually', value: 'manual' }
+      ]
+      : [
+        { name: `📥 Start in host shared drop folder (${sharedDropPath})`, value: 'drop_browse' },
+        { name: '🔍 Browse from host home folder', value: 'browse' },
+        { name: '⌨️  Type host file/folder path manually', value: 'manual' }
+      ]
+  }]);
+
+  if (dropChoice === 'drop') return sharedDropPath;
+  if (dropChoice === 'drop_browse') {
+    return promptRemotePath(username, hostname, privateKeyPath, 'source', sharedDropPath);
+  }
+  if (dropChoice === 'manual') {
+    const { remotePath } = await inquirer.prompt([{
+      type: 'input',
+      name: 'remotePath',
+      message: direction === 'upload' ? 'Host destination path:' : 'Host file/folder path:',
+      validate: v => v.trim().length > 0 || 'Required',
+    }]);
+    return remotePath.trim();
+  }
+
+  return promptRemotePath(username, hostname, privateKeyPath, direction === 'upload' ? 'destination' : 'source');
+}
+
+async function performSCP(username, hostname, direction, privateKeyPath, sharedDropPath = null) {
   console.log('');
   console.log(chalk.bold(`  📦 SCP Transfer (${direction})`));
   console.log(chalk.dim('  ─────────────────────────────────'));
@@ -124,11 +169,11 @@ async function performSCP(username, hostname, direction, privateKeyPath) {
   let remotePath;
 
   if (direction === 'upload') {
-    remotePath = await promptRemotePath(username, hostname, privateKeyPath, 'destination');
+    remotePath = await chooseRemoteTransferPath(username, hostname, privateKeyPath, direction, sharedDropPath);
     localPath = await promptLocalPath('client file/folder to upload');
   } else {
     localPath = await promptLocalPath('client destination');
-    remotePath = await promptRemotePath(username, hostname, privateKeyPath, 'source');
+    remotePath = await chooseRemoteTransferPath(username, hostname, privateKeyPath, direction, sharedDropPath);
   }
 
   await showConnectionTrace('Local', 'Remote SCP');
@@ -179,7 +224,7 @@ async function performSCP(username, hostname, direction, privateKeyPath) {
 
     if (result.exitCode === 0) {
       await simulateTransferProgress(direction === 'upload' ? localPath : remotePath, direction, 1500);
-      
+
       // Verify Checksum
       if (direction === 'upload' && localHash) {
         console.log(chalk.dim('  🔍 Verifying remote SHA-256 checksum...'));
@@ -193,10 +238,10 @@ async function performSCP(username, hostname, direction, privateKeyPath) {
           ];
           if (privateKeyPath) sshArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
           sshArgs.push(`${username}@${hostname}`, `shasum -a 256 ${quoteRemoteShell(remoteChecksumPath)} 2>/dev/null || sha256sum ${quoteRemoteShell(remoteChecksumPath)} 2>/dev/null || shasum -a 256 ${quoteRemoteShell(remotePath)} 2>/dev/null || sha256sum ${quoteRemoteShell(remotePath)}`);
-          
+
           const { stdout } = await execa('ssh', sshArgs, { reject: false });
           const remoteHash = stdout.split(' ')[0].trim();
-          
+
           if (remoteHash === localHash) {
             console.log(chalk.green(`  ✅ Zero-Trust File Integrity: Hash match (${remoteHash.substring(0, 16)}...)`));
           } else {
@@ -212,13 +257,31 @@ async function performSCP(username, hostname, direction, privateKeyPath) {
       }
 
       console.log(chalk.green(`  ✅ Transfer completed successfully!`));
+      recordEvent('scp_transfer_success', { direction, localPath, remotePath, hostname });
     } else {
       console.error(chalk.red('  ❌ SCP transfer failed'));
       if (result.stderr) console.error(chalk.dim(`     ${result.stderr.trim()}`));
+      recordEvent('scp_transfer_failed', { direction, localPath, remotePath, hostname, error: result.stderr });
     }
   } catch (err) {
     console.error(chalk.red(`  ❌ SCP error: ${err.message}`));
   }
+}
+
+async function downloadSpecificRemotePath(username, hostname, privateKeyPath, remotePath, localPath) {
+  await showConnectionTrace('Local', 'Remote SCP');
+  const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
+  const scpArgs = [
+    '-r',
+    '-o', `ProxyCommand=${proxyCommand}`,
+    '-o', 'StrictHostKeyChecking=accept-new',
+    '-o', 'IdentitiesOnly=yes',
+    ...getSshControlOptions(hostname),
+  ];
+  if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
+  scpArgs.push(`${username}@${hostname}:${formatScpRemotePath(remotePath)}`, localPath);
+  const result = await execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+  return result.exitCode === 0;
 }
 
 function joinRemotePath(parent, child) {
@@ -268,7 +331,7 @@ export async function startClientMode(options = {}) {
 
   const config = getConfig();
   const aliasKeys = Object.keys(config.aliases || {});
-  
+
   let targetUid = null;
   let targetPassword = null;
   let targetUsername = null;
@@ -367,7 +430,7 @@ export async function startClientMode(options = {}) {
     try {
       privateKeyPath = await writeEphemeralPrivateKey(payload.privateKey);
       addCleanupHook(() => {
-        try { fs.unlinkSync(privateKeyPath); } catch {}
+        try { fs.unlinkSync(privateKeyPath); } catch { }
       });
     } catch (err) {
       console.log(chalk.yellow(`  ⚠️  Could not use ephemeral SSH key: ${err.message}`));
@@ -397,9 +460,6 @@ export async function startClientMode(options = {}) {
     }
   }
 
-  // Push secure telemetry to host
-  await pushTelemetry(BROKER_URL, targetUid, targetPassword, username);
-
   const { action } = await inquirer.prompt([
     {
       type: 'list',
@@ -415,6 +475,8 @@ export async function startClientMode(options = {}) {
     }
   ]);
 
+  await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, action);
+
   if (action === 'chat') {
     await handleClientChat(targetUid, targetPassword, payload.chatUrl);
   } else if (action === 'ssh') {
@@ -422,7 +484,7 @@ export async function startClientMode(options = {}) {
   } else if (action === 'reverse') {
     await performReverseForward(username, hostname, privateKeyPath);
   } else {
-    await performSCP(username, hostname, action, privateKeyPath);
+    await performSCP(username, hostname, action, privateKeyPath, payload.sharedDropPath);
   }
 
   console.log('');
@@ -436,16 +498,56 @@ export async function startClientMode(options = {}) {
   ]);
 
   if (reconnect) {
-    await handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword);
+    await handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, payload.sharedDropPath);
   }
 
   await cleanupAll();
 }
 
+/**
+ * Perform a non-interactive SCP transfer (used by AI Transfer Assistant).
+ * params: { brokerUrl, uid, password, username, direction, localPath, remotePath }
+ */
+export async function performSCPNonInteractive(params = {}) {
+  const { brokerUrl, uid, password, username, direction, localPath, remotePath } = params;
+  if (!brokerUrl || !uid || !password) throw new Error('Missing broker connection info');
+
+  const payload = await resolveUID(brokerUrl, uid, password);
+  if (!payload) throw new Error('Could not resolve UID/payload');
+
+  const tunnelUrl = payload.url;
+  const hostname = extractHostname(tunnelUrl);
+  const privateKeyPath = payload.privateKey ? await writeEphemeralPrivateKey(payload.privateKey) : null;
+
+  // Build scp args similar to performSCP
+  const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
+  const scpArgs = ['-r', '-o', `ProxyCommand=${proxyCommand}`, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'IdentitiesOnly=yes', ...getSshControlOptions(hostname)];
+  if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
+
+  const remoteSpec = `${username}@${hostname}:${formatScpRemotePath(remotePath)}`;
+  if (direction === 'upload') {
+    scpArgs.push(localPath, remoteSpec);
+  } else {
+    scpArgs.push(remoteSpec, localPath);
+  }
+
+  try {
+    const result = await execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+    if (result.exitCode === 0) {
+      recordEvent('scp_transfer_success', { direction, localPath, remotePath, hostname, automated: true });
+      return true;
+    }
+    recordEvent('scp_transfer_failed', { direction, localPath, remotePath, hostname, error: result.stderr, automated: true });
+    return false;
+  } finally {
+    try { if (privateKeyPath) fs.unlinkSync(privateKeyPath); } catch { }
+  }
+}
+
 async function handleClientChat(uid, password, cachedChatUrl) {
   let chatUrl = cachedChatUrl;
   const spinner = createSpinner('Checking for active chat room...', networkSpinner).start();
-  
+
   const payload = await resolveUID(BROKER_URL, uid, password, true); // true = silent if possible, or just re-resolve
   if (payload && payload.chatUrl) {
     chatUrl = payload.chatUrl;
@@ -464,7 +566,7 @@ async function handleClientChat(uid, password, cachedChatUrl) {
   }
 }
 
-async function handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword) {
+async function handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, sharedDropPath = null) {
   const { action } = await inquirer.prompt([
     {
       type: 'list',
@@ -483,6 +585,8 @@ async function handleSubsequentActions(username, hostname, privateKeyPath, targe
 
   if (action === 'exit') return;
 
+  await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, action);
+
   if (action === 'chat') {
     await handleClientChat(targetUid, targetPassword, null);
   } else if (action === 'ssh') {
@@ -490,7 +594,7 @@ async function handleSubsequentActions(username, hostname, privateKeyPath, targe
   } else if (action === 'reverse') {
     await performReverseForward(username, hostname, privateKeyPath);
   } else {
-    await performSCP(username, hostname, action, privateKeyPath);
+    await performSCP(username, hostname, action, privateKeyPath, sharedDropPath);
   }
 
   const { reconnect } = await inquirer.prompt([
@@ -503,7 +607,7 @@ async function handleSubsequentActions(username, hostname, privateKeyPath, targe
   ]);
 
   if (reconnect) {
-    await handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword);
+    await handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, sharedDropPath);
   }
 }
 
@@ -547,8 +651,10 @@ async function performReverseForward(username, hostname, privateKeyPath) {
     trackPID(child.pid);
     spinner.succeed(`Reverse tunnel active! Host can access your app at ${chalk.bold.green('localhost:' + remotePort)}`);
     console.log(chalk.dim('  Press Ctrl+C to terminate the reverse tunnel.'));
-    
+
+    recordEvent('reverse_forward_started', { localPort, remotePort, hostname });
     await child;
+    recordEvent('reverse_forward_ended', { localPort, remotePort, hostname });
   } catch (err) {
     if (err.isCanceled) return;
     if (err.killed) return;

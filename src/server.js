@@ -84,7 +84,16 @@ const TTL_MS = 60 * 60 * 1000; // 1 hour
 const MAX_UIDS = 50000;        // Max concurrent tunnels (prevent memory leak)
 const MAX_VIOLATIONS = 50000;  // Max tracked malicious IPs before reset
 
-const store = new Map(); // uid → { iv, ciphertext, salt, createdAt, clients: [] }
+const store = new Map(); // uid → { iv, ciphertext, salt, createdAt, clients: [], approvals: [] }
+
+function isEncryptedPayload(body) {
+  return body
+    && /^[a-f0-9]{32}$/i.test(body.iv || '')
+    && /^[a-f0-9]{32}$/i.test(body.salt || '')
+    && typeof body.ciphertext === 'string'
+    && body.ciphertext.length > 0
+    && /^[A-Za-z0-9+/]+={0,2}$/.test(body.ciphertext);
+}
 
 function pruneExpired() {
   const now = Date.now();
@@ -119,7 +128,7 @@ app.get('/health', (_req, res) => {
  */
 app.post('/register', strictLimiter, (req, res) => {
   try {
-    const { uid, iv, ciphertext, salt } = req.body;
+    const { uid, iv, ciphertext, salt, approvalRequired = false, oneTime = false } = req.body;
 
     if (!uid || !iv || !ciphertext || !salt) {
       recordViolation(req);
@@ -158,8 +167,11 @@ app.post('/register', strictLimiter, (req, res) => {
       iv,
       ciphertext,
       salt,
+      approvalRequired: Boolean(approvalRequired),
+      oneTime: Boolean(oneTime),
       createdAt: Date.now(),
-      clients: []
+      clients: [],
+      approvals: []
     });
 
     console.log(`✅ [${new Date().toLocaleTimeString()}] Registered UID: ${uid} (encrypted, ${ciphertext.length} bytes)`);
@@ -191,6 +203,14 @@ app.get('/resolve/:uid', (req, res) => {
       return res.status(410).json({ error: 'UID expired' });
     }
 
+    if (entry.approvalRequired) {
+      const requestId = req.query.requestId;
+      const approved = entry.approvals.find(request => request.id === requestId && request.status === 'approved');
+      if (!approved) {
+        return res.status(423).json({ error: 'Host approval required before resolving this session' });
+      }
+    }
+
     console.log(`🔍 [${new Date().toLocaleTimeString()}] Resolved UID: ${uid} (returning encrypted blob)`);
 
     // Return encrypted blob — client decrypts
@@ -199,6 +219,62 @@ app.get('/resolve/:uid', (req, res) => {
     console.error('❌ Resolve error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+/**
+ * POST /approval-request/:uid
+ * Client submits encrypted approval metadata. Broker cannot decrypt it.
+ */
+app.post('/approval-request/:uid', generalLimiter, (req, res) => {
+  try {
+    const { uid } = req.params;
+    const entry = store.get(uid);
+    if (!entry) return res.status(404).json({ error: 'UID not found' });
+    if (!isEncryptedPayload(req.body)) return res.status(400).json({ error: 'Invalid encrypted approval payload' });
+
+    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const request = {
+      id,
+      iv: req.body.iv,
+      ciphertext: req.body.ciphertext,
+      salt: req.body.salt,
+      status: entry.approvalRequired ? 'pending' : 'approved',
+      createdAt: Date.now(),
+      decidedAt: entry.approvalRequired ? null : Date.now(),
+    };
+
+    entry.approvals.push(request);
+    if (entry.approvals.length > 50) entry.approvals.shift();
+    res.json({ requestId: id, status: request.status, approvalRequired: entry.approvalRequired });
+  } catch {
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.get('/approval-requests/:uid', generalLimiter, (req, res) => {
+  const entry = store.get(req.params.uid);
+  if (!entry) return res.status(404).json({ error: 'UID not found' });
+  res.json({ approvalRequired: entry.approvalRequired, approvals: entry.approvals });
+});
+
+app.post('/approval-requests/:uid/:requestId/:decision', generalLimiter, (req, res) => {
+  const entry = store.get(req.params.uid);
+  if (!entry) return res.status(404).json({ error: 'UID not found' });
+  const request = entry.approvals.find(item => item.id === req.params.requestId);
+  if (!request) return res.status(404).json({ error: 'Request not found' });
+  if (!['approved', 'denied'].includes(req.params.decision)) return res.status(400).json({ error: 'Invalid decision' });
+
+  request.status = req.params.decision;
+  request.decidedAt = Date.now();
+  res.json({ status: request.status });
+});
+
+app.get('/approval-status/:uid/:requestId', generalLimiter, (req, res) => {
+  const entry = store.get(req.params.uid);
+  if (!entry) return res.status(404).json({ error: 'UID not found' });
+  const request = entry.approvals.find(item => item.id === req.params.requestId);
+  if (!request) return res.status(404).json({ error: 'Request not found' });
+  res.json({ status: request.status });
 });
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "@miraj181/ipingyou",
-  "version": "2.0.13",
+  "version": "2.0.14",
   "description": "SecureLink-CLI — Secure peer-to-peer remote access via SSH & Cloudflare Tunnels",
   "main": "src/cli.js",
   "bin": {
@@ -18,6 +18,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev:cli": "node src/cli.js",
+    "test": "node test/test_ai_helpers.js",
     "prepublishOnly": "node -e \"require('fs').accessSync('LICENSE')\" && node src/cli.js --help"
   },
   "keywords": [
