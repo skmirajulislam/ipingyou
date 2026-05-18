@@ -286,6 +286,7 @@ If you find this project useful:
 SK Mirajul Islam
 
 GitHub: [https://github.com/skmirajulislam](https://github.com/skmirajulislam)
+Email: skmirajulislam181@gmail.com
 
 ---
 
