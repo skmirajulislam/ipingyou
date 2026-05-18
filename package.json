@@ -52,7 +52,7 @@
     "ora": "^9.4.0",
     "tree-kill": "^1.2.2",
     "ws": "^8.20.1",
-    "express": "^4.19.2",
+    "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "helmet": "^7.1.0"
   },
