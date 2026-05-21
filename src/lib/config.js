@@ -7,10 +7,14 @@ const CONFIG_FILE = path.join(CONFIG_DIR, 'config.json');
 
 function ensureConfig() {
   if (!fs.existsSync(CONFIG_DIR)) {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 });
+  } else {
+    try { fs.chmodSync(CONFIG_DIR, 0o700); } catch { }
   }
   if (!fs.existsSync(CONFIG_FILE)) {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ aliases: {}, settings: {} }, null, 2));
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ aliases: {}, settings: {} }, null, 2), { mode: 0o600 });
+  } else {
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch { }
   }
 }
 
@@ -26,7 +30,8 @@ export function getConfig() {
 export function saveConfig(config) {
   try {
     ensureConfig();
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2));
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), { mode: 0o600 });
+    try { fs.chmodSync(CONFIG_FILE, 0o600); } catch { }
   } catch (err) {
     throw new Error(`Could not save config: ${err.message}`);
   }

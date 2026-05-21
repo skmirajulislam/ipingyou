@@ -411,37 +411,6 @@ async function installOpenSSH(osInfo) {
 // ─── Main Dependency Check ───────────────────────────────────
 
 /**
- * Install a dependency on the current platform.
- * @param {string} pkg — package name (e.g. 'openssh-server', 'cloudflared')
- * @param {'debian'|'arch'|'fedora'|'mac'|'windows'} distro
- */
-export async function installDependency(pkg, distro) {
-  const spinner = ora(`Installing ${chalk.cyan(pkg)}...`).start();
-
-  const commands = {
-    debian: `sudo apt-get install -y ${pkg}`,
-    arch: `sudo pacman -S --noconfirm ${pkg}`,
-    fedora: `sudo dnf install -y ${pkg}`,
-    mac: `brew install ${pkg}`,
-  };
-
-  const cmd = commands[distro];
-  if (!cmd) {
-    spinner.fail(`No auto-install command for ${distro}. Please install ${pkg} manually.`);
-    return false;
-  }
-
-  try {
-    await execaCommand(cmd, { stdio: 'inherit' });
-    spinner.succeed(`${chalk.green(pkg)} installed successfully`);
-    return true;
-  } catch (err) {
-    spinner.fail(`Failed to install ${pkg}: ${err.message}`);
-    return false;
-  }
-}
-
-/**
  * Run full dependency check with auto-bootstrap.
  *
  * Pipeline:

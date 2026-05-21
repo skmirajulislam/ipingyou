@@ -164,10 +164,6 @@ export function installShutdownHandlers() {
  * Get count of tracked PIDs.
  * @returns {number}
  */
-export function getTrackedCount() {
-  return trackedPIDs.size;
-}
-
 /**
  * Execute Panic Mode (Self-Destruct)
  * Wipes all configs, keys, and forcefully kills associated processes.

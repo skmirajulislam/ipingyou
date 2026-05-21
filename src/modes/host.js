@@ -28,7 +28,7 @@ import { createSpinner, networkSpinner, typeText } from '../lib/animations.js';
 import { startChatServer, openLocalChatUI } from '../lib/chat.js';
 import { spawnTunnelSupervised } from '../lib/tunnel.js';
 import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID } from '../lib/broker.js';
-import { recordEvent } from '../lib/session-log.js';
+import { cleanupSessionLog, getSessionLogPath, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -392,6 +392,11 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
     console.log(`  ║  ${chalk.dim('Press Ctrl+C to terminate the session')}              ║`);
     console.log(chalk.bold('  ╚════════════════════════════════════════════════════╝'));
     console.log('');
+    const logPath = getSessionLogPath();
+    if (logPath) {
+      console.log(chalk.dim(`  📜 Session log: ${logPath}`));
+      console.log('');
+    }
   };
 
   renderDashboard();
@@ -431,6 +436,8 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           choices,
         },
       ]);
+
+      logSessionEvent('host_action_selected', { action });
 
       switch (action) {
         case 'approvals': {
@@ -473,6 +480,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
             }
           } catch (err) {
             console.log(chalk.red(`  Could not review approvals: ${err.message}`));
+            logSessionEvent('host_approvals_error', { error: err.message }, 'error');
           }
           return waitForAction();
         }
@@ -500,22 +508,26 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           await waitForValue(() => serviceConfig.chatUrl, 30000, 'Chat tunnel startup');
 
           console.log(chalk.green('  ✅ Chat Room Live! Clients can now join.'));
+          logSessionEvent('host_chat_started');
           await openLocalChatUI(chatServerInstance.port, password);
           return waitForAction();
         }
 
         case 'dashboard': {
           dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig);
+          logSessionEvent('host_dashboard_opened');
           return waitForAction();
         }
 
         case 'dashboard_url': {
           console.log(chalk.green(`  Dashboard: ${dashboardInstance.url}`));
+          logSessionEvent('host_dashboard_url_shown');
           return waitForAction();
         }
 
         case 'reopen_chat': {
           if (chatServerInstance) await openLocalChatUI(chatServerInstance.port, password);
+          logSessionEvent('host_chat_reopened');
           return waitForAction();
         }
 
@@ -534,13 +546,16 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
               console.log(chalk.yellow('  ⚠️  No mirrored terminal session is active yet.'));
               console.log(chalk.dim('     A client must choose "Connect via SSH" first. SCP-only clients do not create a tmux session.'));
               console.log(chalk.dim('     tmux is needed on the host machine only; the client does not need tmux.'));
+              logSessionEvent('host_mirror_missing_session', {}, 'warn');
               return waitForAction();
             }
             await execaCommand('tmux attach -t SecureLink_Session -r', { stdio: 'inherit' });
+            logSessionEvent('host_mirror_attached');
           } catch (err) {
             console.log(chalk.yellow('  ⚠️  Could not attach to tmux.'));
             console.log(chalk.dim(`     ${err.message}`));
             console.log(chalk.dim('     Terminal mirroring requires tmux on the host machine and an active interactive SSH client.'));
+            logSessionEvent('host_mirror_error', { error: err.message }, 'warn');
           }
           return waitForAction();
         }
@@ -572,11 +587,13 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
                   console.log(`    Time:     ${chalk.dim(t.time)}`);
                 } catch (e) {
                   console.log(chalk.yellow(`\n  Client #${i + 1}: Payload decryption failed (wrong password or corrupted).`));
+                  logSessionEvent('host_telemetry_decrypt_failed', { index: i + 1 }, 'warn');
                 }
               });
             }
           } catch (e) {
             spinner.fail('Could not reach broker.');
+            logSessionEvent('host_telemetry_fetch_failed', { error: e.message }, 'warn');
           }
           console.log('');
           return waitForAction();
@@ -584,6 +601,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
 
         case 'reregister':
           await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+          logSessionEvent('host_broker_reregistered');
           return waitForAction();
 
         case 'terminate': {
@@ -596,8 +614,10 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
               await execaCommand('tmux kill-session -t SecureLink_Session', { reject: false });
             }
             spinner.succeed('All client SSH sessions terminated');
+            logSessionEvent('host_sessions_terminated');
           } catch {
             spinner.warn('Could not terminate sessions (none active?)');
+            logSessionEvent('host_sessions_terminate_failed', {}, 'warn');
           }
           return waitForAction();
         }
@@ -607,6 +627,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           if (chatTunnelProcess) chatTunnelProcess.kill();
           if (global.privateBrokerInstance) global.privateBrokerInstance.kill();
           if (tunnelProcess) tunnelProcess.kill();
+          logSessionEvent('host_session_exit');
           await cleanupAll();
           return;
       }
@@ -627,9 +648,17 @@ export async function startHostMode() {
   console.log(chalk.dim('  ─────────────────────────────────────'));
   console.log('');
 
+  const sessionLogPath = initSessionLog('host');
+  if (sessionLogPath) {
+    console.log(chalk.dim(`  📜 Session log: ${sessionLogPath}`));
+    addCleanupHook(() => cleanupSessionLog());
+  }
+  logSessionEvent('host_mode_started');
+
   const uid = generateUID();
   console.log(`  ${chalk.green('✓')} Session UID: ${chalk.bold.white(uid)}`);
   console.log('');
+  logSessionEvent('host_uid_generated', { uid });
 
   const { pwdInput } = await inquirer.prompt([
     {
@@ -660,6 +689,7 @@ export async function startHostMode() {
       global.privateBrokerInstance = await spawnPrivateBroker();
       BROKER_URL = global.privateBrokerInstance.url;
     }
+    logSessionEvent('host_broker_selected', { choice: brokerChoice, broker: BROKER_URL });
   }
 
   // Only ping if we haven't just created a private broker
@@ -669,8 +699,10 @@ export async function startHostMode() {
 
     if (brokerOnline) {
       spinner.succeed(`Broker is online ${chalk.dim(`(${BROKER_URL})`)}`);
+      logSessionEvent('host_broker_online', { broker: BROKER_URL });
     } else {
       spinner.warn(`Broker is unreachable ${chalk.dim(`(${BROKER_URL})`)}`);
+      logSessionEvent('host_broker_unreachable', { broker: BROKER_URL }, 'warn');
       const { startPrivate } = await inquirer.prompt([
         {
           type: 'confirm',
@@ -682,8 +714,10 @@ export async function startHostMode() {
       if (startPrivate) {
         global.privateBrokerInstance = await spawnPrivateBroker();
         BROKER_URL = global.privateBrokerInstance.url;
+        logSessionEvent('host_private_broker_spawned', { broker: BROKER_URL });
       } else {
         console.log(chalk.red('\n  ❌ FATAL: Cannot continue without a broker.'));
+        logSessionEvent('host_broker_missing_exit', { broker: BROKER_URL }, 'error');
         process.exit(1);
       }
     }
@@ -722,6 +756,7 @@ export async function startHostMode() {
 
   const serviceConfig = { type: serviceType === 'share' ? 'ssh' : serviceType, port: targetPort, protocol };
   const targetUrl = `${protocol}://localhost:${targetPort}`;
+  logSessionEvent('host_service_selected', { serviceType, protocol, port: targetPort });
 
   if (serviceType === 'ssh' || serviceType === 'share') {
     await ensureSSHRunning();
@@ -739,6 +774,7 @@ export async function startHostMode() {
       serviceConfig.oneTimeSharePath = await promptOneTimeSharePath();
       serviceConfig.oneTime = true;
       console.log(chalk.green(`  ✓ One-time share selected: ${serviceConfig.oneTimeSharePath}`));
+      logSessionEvent('host_one_time_share_selected');
     }
 
     const { approvalRequired } = await inquirer.prompt([{
@@ -748,6 +784,7 @@ export async function startHostMode() {
       default: serviceType !== 'share',
     }]);
     serviceConfig.approvalRequired = approvalRequired;
+    logSessionEvent('host_approval_required', { approvalRequired });
 
     console.log(chalk.dim('  🔑 Generating ephemeral SSH key for passwordless entry...'));
     try {
@@ -763,9 +800,11 @@ export async function startHostMode() {
         try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
       });
       console.log(chalk.green('  ✓ Ephemeral key injected. Client will connect without system password!'));
+      logSessionEvent('host_ephemeral_key_ready');
     } catch (err) {
       console.log(chalk.yellow(`  ⚠️  Could not prepare ephemeral SSH key: ${err.message}`));
       console.log(chalk.dim('     Client will need to use standard OS password.'));
+      logSessionEvent('host_ephemeral_key_failed', { error: err.message }, 'warn');
     }
   } else {
     console.log(chalk.dim(`  ℹ️  Ensure your ${protocol.toUpperCase()} service is running on port ${targetPort}.`));
@@ -778,6 +817,7 @@ export async function startHostMode() {
     const registered = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
     if (!registered) {
       console.error(chalk.red(`\n  ❌ FATAL: Could not register with broker at ${BROKER_URL}`));
+      logSessionEvent('host_broker_register_failed', { broker: BROKER_URL }, 'error');
       process.exit(1);
     }
   });

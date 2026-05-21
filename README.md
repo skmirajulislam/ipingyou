@@ -22,6 +22,11 @@ No firewalls to configure. No port forwarding. No plaintext leakage.
 * 📡 **Hardware Telemetry Verification**: Clients silently generate hardware footprint reports (OS, RAM, CPU, IP), encrypt them locally with the session password, and send them to the Host for authorization.
 * 🚨 **Panic Kill-Switch**: Type `ipingyou panic` to instantly vaporize all associated keys, wipe all alias configs, and send a `SIGKILL` to every active tunnel and SSH shell.
 * 👻 **Daemonization**: Run `ipingyou service install` to quietly install and run the Host listener in the background (survives system reboots using PM2).
+* 🧭 **Approval Gate**: Require the Host to explicitly approve clients before they receive tunnel/key material.
+* 📦 **One-Time File Share**: Serve a single file/folder over SCP and revoke after use.
+* 🌐 **HTTP & TCP Exposure**: Share a local web app or any TCP service (DB/RDP/VNC) beyond SSH.
+* 📂 **Shared Drop Folder**: Auto-prepared dropbox folder for safe file transfers (macOS friendly).
+* 🧾 **Live Session Logs**: Host/client/broker write ephemeral per-session logs with actions and request/response status, removed on exit.
 
 ---
 
@@ -100,13 +105,15 @@ These alerts (e.g., "AI-detected potential code anomaly", "Shell access", "Netwo
 | `ipingyou` | Interactive CLI dashboard wizard. |
 | `ipingyou host` | Start hosting and exposing your local machine securely. |
 | `ipingyou connect -u <UID>` | Connect directly to a specific UID. |
+| `ipingyou ai` | Groq-powered task assistant with guarded local/remote tools. |
+| `ipingyou doctor` | Diagnostics for dependencies, SSH, broker, SCP, AI, and tests. |
 | `ipingyou panic` | 🚨 Self-destruct mode. Wipes configs, memory, and kills all processes. |
 | `ipingyou service install` | 👻 Installs Host mode as an always-on background daemon. |
 | `ipingyou service stop` | Stops and removes the background daemon. |
+| `ipingyou service status` | Shows background daemon status. |
 
 ---
 
 ## 📜 License
 
 [MIT License](LICENSE) © Sk Mirajul Islam
-

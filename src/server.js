@@ -12,23 +12,56 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
+import { cleanupSessionLog, initSessionLog, logSessionEvent } from './lib/session-log.js';
 
 const app = express();
+const brokerLogPath = initSessionLog('broker');
+if (brokerLogPath) {
+  console.log(`  📜 Broker session log: ${brokerLogPath}`);
+}
 
 // ─── Process-Level Error Handling ────────────────────────────
+let shuttingDown = false;
+
+function handleShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  logSessionEvent('broker_shutdown', { signal });
+  cleanupSessionLog();
+  process.exit(0);
+}
+
+process.on('SIGINT', () => handleShutdown('SIGINT'));
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+
 process.on('uncaughtException', (err) => {
   console.error('💥 Uncaught Exception:', err.message);
+  logSessionEvent('broker_uncaught_exception', { error: err.message }, 'error');
   if (err.stack) console.error(err.stack);
   process.exit(1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
   console.error('💥 Unhandled Rejection at:', promise, 'reason:', reason);
+  const message = reason instanceof Error ? reason.message : String(reason);
+  logSessionEvent('broker_unhandled_rejection', { error: message }, 'error');
 });
 
 // ─── Basic Security Headers ──────────────────────────────────
 app.use(helmet());
 app.use(express.json({ limit: '10kb' })); // Limit JSON payload size to prevent payload-based DoS
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    logSessionEvent('broker_http', {
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs: Date.now() - startedAt,
+    });
+  });
+  next();
+});
 
 // ─── Rate Limiters ───────────────────────────────────────────
 // Trust proxy is required if the server is behind a reverse proxy (like Render, Heroku, Cloudflare)
@@ -332,6 +365,7 @@ app.delete('/revoke/:uid', strictLimiter, (req, res) => {
 // ─── Global Error Handler ────────────────────────────────────
 app.use((err, req, res, next) => {
   console.error('❌ Express Error:', err.message);
+  logSessionEvent('broker_express_error', { path: req.originalUrl, method: req.method, error: err.message }, 'error');
   if (err.stack) console.error(err.stack);
   res.status(err.status || 500).json({ error: 'Internal Server Error' });
 });

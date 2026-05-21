@@ -26,7 +26,7 @@ import { calculateChecksum } from '../lib/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
 import { buildSshArgs, extractHostname, formatScpRemotePath, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
 import open from 'open';
-import { recordEvent } from '../lib/session-log.js';
+import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
 
@@ -300,6 +300,13 @@ export async function startClientMode(options = {}) {
   console.log(chalk.dim('  ──────────────────────────────────────────'));
   console.log('');
 
+  const sessionLogPath = initSessionLog('client');
+  if (sessionLogPath) {
+    console.log(chalk.dim(`  📜 Session log: ${sessionLogPath}`));
+    addCleanupHook(() => cleanupSessionLog());
+  }
+  logSessionEvent('client_mode_started');
+
   // Allow setting a custom broker URL if process.env isn't overridden by CLI
   if (process.env.BROKER_URL) {
     BROKER_URL = process.env.BROKER_URL;
@@ -327,6 +334,7 @@ export async function startClientMode(options = {}) {
       BROKER_URL = customBroker.trim();
       process.env.BROKER_URL = BROKER_URL; // Update for consistency
     }
+    logSessionEvent('client_broker_selected', { choice: brokerChoice, broker: BROKER_URL });
   }
 
   const config = getConfig();
@@ -354,6 +362,7 @@ export async function startClientMode(options = {}) {
       targetUid = aliasData.uid;
       targetPassword = aliasData.password;
       targetUsername = aliasData.username;
+      logSessionEvent('client_alias_selected', { alias: useAlias, uid: targetUid });
     }
   }
 
@@ -366,6 +375,7 @@ export async function startClientMode(options = {}) {
       validate: (v) => v.trim().length > 0 || 'Password is required to decrypt',
     }]);
     targetPassword = password.trim();
+    logSessionEvent('client_uid_provided', { uid: targetUid });
   }
 
   if (!targetUid) {
@@ -390,6 +400,7 @@ export async function startClientMode(options = {}) {
     ]);
     targetUid = answer.uid.trim();
     targetPassword = answer.password.trim();
+    logSessionEvent('client_uid_provided', { uid: targetUid });
   }
 
   const payload = await resolveUID(BROKER_URL, targetUid, targetPassword);
@@ -403,6 +414,7 @@ export async function startClientMode(options = {}) {
     console.log(chalk.dim('  ─────────────────────────────────'));
     console.log(chalk.green(`  Open this URL in your browser:\n  👉 ${chalk.bold.cyan(payload.url)}`));
     console.log('');
+    logSessionEvent('client_http_mode', { uid: targetUid, port: payload.port || null });
     process.exit(0);
   }
 
@@ -416,6 +428,7 @@ export async function startClientMode(options = {}) {
     console.log('');
     console.log(`  Then connect your local client (e.g. Postgres, VNC, RDP) to ${chalk.green('127.0.0.1:' + payload.port)}`);
     console.log('');
+    logSessionEvent('client_tcp_mode', { uid: targetUid, port: payload.port });
     process.exit(0);
   }
 
@@ -432,9 +445,11 @@ export async function startClientMode(options = {}) {
       addCleanupHook(() => {
         try { fs.unlinkSync(privateKeyPath); } catch { }
       });
+      logSessionEvent('client_ephemeral_key_ready');
     } catch (err) {
       console.log(chalk.yellow(`  ⚠️  Could not use ephemeral SSH key: ${err.message}`));
       console.log(chalk.dim('     Falling back to standard OS password.'));
+      logSessionEvent('client_ephemeral_key_failed', { error: err.message }, 'warn');
       privateKeyPath = null;
     }
   }
@@ -457,6 +472,7 @@ export async function startClientMode(options = {}) {
       }]);
       saveAlias(aliasName.trim(), { uid: targetUid, password: targetPassword, username });
       console.log(chalk.green(`  ✓ Saved as alias: ${chalk.bold(aliasName.trim())}\n`));
+      logSessionEvent('client_alias_saved', { alias: aliasName.trim(), uid: targetUid });
     }
   }
 
@@ -476,6 +492,7 @@ export async function startClientMode(options = {}) {
   ]);
 
   await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, action);
+  logSessionEvent('client_action_selected', { action });
 
   if (action === 'chat') {
     await handleClientChat(targetUid, targetPassword, payload.chatUrl);
@@ -501,6 +518,7 @@ export async function startClientMode(options = {}) {
     await handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, payload.sharedDropPath);
   }
 
+  logSessionEvent('client_session_exit');
   await cleanupAll();
 }
 
@@ -586,6 +604,7 @@ async function handleSubsequentActions(username, hostname, privateKeyPath, targe
   if (action === 'exit') return;
 
   await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, action);
+  logSessionEvent('client_action_selected', { action });
 
   if (action === 'chat') {
     await handleClientChat(targetUid, targetPassword, null);
@@ -646,18 +665,27 @@ async function performReverseForward(username, hostname, privateKeyPath) {
   console.log('');
   const spinner = createSpinner(`Forwarding Host:${remotePort} ➔ Localhost:${localPort}...`, networkSpinner).start();
 
+  let child = null;
   try {
-    const child = execa('ssh', sshArgs, { stdio: 'inherit' });
+    child = execa('ssh', sshArgs, { stdio: 'inherit', reject: false });
     trackPID(child.pid);
     spinner.succeed(`Reverse tunnel active! Host can access your app at ${chalk.bold.green('localhost:' + remotePort)}`);
     console.log(chalk.dim('  Press Ctrl+C to terminate the reverse tunnel.'));
 
     recordEvent('reverse_forward_started', { localPort, remotePort, hostname });
-    await child;
-    recordEvent('reverse_forward_ended', { localPort, remotePort, hostname });
+    const result = await child;
+    if (result.exitCode === 0) {
+      recordEvent('reverse_forward_ended', { localPort, remotePort, hostname, exitCode: 0 });
+    } else {
+      console.log(chalk.red(`\n  ❌ Reverse tunnel exited with code ${result.exitCode}`));
+      recordEvent('reverse_forward_failed', { localPort, remotePort, hostname, exitCode: result.exitCode });
+    }
   } catch (err) {
     if (err.isCanceled) return;
     if (err.killed) return;
+    spinner.fail('Reverse tunnel failed to start');
     console.log(chalk.red(`\n  ❌ Tunnel disconnected: ${err.message}`));
+  } finally {
+    if (child?.pid) untrackPID(child.pid);
   }
 }

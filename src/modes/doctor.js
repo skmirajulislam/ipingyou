@@ -66,6 +66,18 @@ async function commandFound(command) {
 async function checkSshService() {
   const osInfo = detectOS();
   if (osInfo.isMac) {
+    const launchctl = await execaCommand('launchctl print-disabled system', { reject: false, timeout: 5000 });
+    const launchctlOutput = `${launchctl.stdout || ''}\n${launchctl.stderr || ''}`.toLowerCase();
+    const launchctlMatch = launchctlOutput.match(/"com\.openssh\.sshd"\s*=>\s*(enabled|disabled)/);
+    if (launchctlMatch) {
+      if (launchctlMatch[1] === 'enabled') return { status: 'pass', detail: 'Remote Login is enabled' };
+      return {
+        status: 'warn',
+        detail: 'Remote Login appears off',
+        hint: 'Enable System Settings → General → Sharing → Remote Login before hosting SSH.',
+      };
+    }
+
     const result = await execaCommand('systemsetup -getremotelogin', { reject: false, timeout: 5000 });
     const output = result.stdout || result.stderr || '';
     if (/on/i.test(output)) return { status: 'pass', detail: 'Remote Login is on' };
@@ -158,8 +170,8 @@ function checkMacPrivacyHints() {
 
   if (protectedDirs.length === 0) return { status: 'skip', detail: 'no standard protected folders found' };
   return {
-    status: 'warn',
-    detail: 'SSH may not browse Downloads/Desktop/Documents without privacy permission',
+    status: 'skip',
+    detail: 'macOS protected folder note',
     hint: 'Prefer the iPingYou drop folder, or grant Full Disk Access to sshd/Remote Login.',
   };
 }
