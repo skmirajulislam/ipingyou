@@ -172,10 +172,10 @@ export async function resolveUID(brokerUrl, uid, password, silent = false, reque
       return null;
     }
     if (res.status === 423) {
-      if (spinner) spinner.fail('Host approval is required before this session can be resolved');
-      else console.error(chalk.red('  ❌ Host approval required.'));
+      if (spinner) spinner.info('Host approval is required — submitting access request...');
+      else console.log(chalk.yellow('  ⏳ Host approval required.'));
       logSessionEvent('broker_resolve_needs_approval', { uid, status: 423 }, 'warn');
-      return null;
+      return { needsApproval: true };
     }
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));

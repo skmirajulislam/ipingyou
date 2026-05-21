@@ -403,8 +403,58 @@ export async function startClientMode(options = {}) {
     logSessionEvent('client_uid_provided', { uid: targetUid });
   }
 
-  const payload = await resolveUID(BROKER_URL, targetUid, targetPassword);
-  if (!payload) {
+  let payload = await resolveUID(BROKER_URL, targetUid, targetPassword);
+
+  // ─── Approval Flow ──────────────────────────────────────────
+  if (payload && payload.needsApproval) {
+    console.log('');
+    console.log(chalk.bold.yellow('  🔐 Host Approval Required'));
+    console.log(chalk.dim('  ──────────────────────────────────────'));
+    console.log(chalk.dim('  The host has enabled approval gating. Submitting your access request...'));
+
+    try {
+      const approvalDetails = {
+        username: os.userInfo().username,
+        hostname: os.hostname(),
+        os: `${os.type()} ${os.release()} (${os.arch()})`,
+        intent: 'connect',
+        time: new Date().toISOString(),
+      };
+
+      const { requestId, status: reqStatus, approvalRequired } = await requestHostApproval(
+        BROKER_URL, targetUid, targetPassword, approvalDetails
+      );
+
+      logSessionEvent('client_approval_submitted', { uid: targetUid, requestId });
+
+      if (!approvalRequired || reqStatus === 'approved') {
+        console.log(chalk.green('  ✅ Access auto-approved (host does not require manual approval for this session).'));
+        payload = await resolveUID(BROKER_URL, targetUid, targetPassword, false, requestId);
+      } else {
+        console.log(chalk.yellow(`  ⏳ Waiting for host to approve your request (ID: ${requestId})...`));
+        console.log(chalk.dim('     This may take a few minutes. Press Ctrl+C to cancel.'));
+        console.log('');
+
+        const approved = await waitForApproval(BROKER_URL, targetUid, requestId, 300000);
+
+        if (approved) {
+          console.log(chalk.green('  ✅ Host approved your access request!'));
+          logSessionEvent('client_approval_granted', { uid: targetUid, requestId });
+          payload = await resolveUID(BROKER_URL, targetUid, targetPassword, false, requestId);
+        } else {
+          console.log(chalk.red('  ❌ Host denied your access request.'));
+          logSessionEvent('client_approval_denied', { uid: targetUid, requestId });
+          process.exit(1);
+        }
+      }
+    } catch (err) {
+      console.log(chalk.red(`  ❌ Approval flow failed: ${err.message}`));
+      logSessionEvent('client_approval_error', { uid: targetUid, error: err.message }, 'error');
+      process.exit(1);
+    }
+  }
+
+  if (!payload || payload.needsApproval) {
     process.exit(1);
   }
 
@@ -412,10 +462,17 @@ export async function startClientMode(options = {}) {
     console.log('');
     console.log(chalk.bold('  🌐 HTTP Service Exposed'));
     console.log(chalk.dim('  ─────────────────────────────────'));
-    console.log(chalk.green(`  Open this URL in your browser:\n  👉 ${chalk.bold.cyan(payload.url)}`));
+    console.log(chalk.green(`  Opening in browser: ${chalk.bold.cyan(payload.url)}`));
     console.log('');
     logSessionEvent('client_http_mode', { uid: targetUid, port: payload.port || null });
-    process.exit(0);
+    try {
+      await open(payload.url);
+    } catch {
+      console.log(chalk.dim(`  Could not auto-open. Please visit: ${payload.url}`));
+    }
+    console.log(chalk.dim('  Press Ctrl+C to exit.'));
+    // Keep process alive so cleanup handlers work
+    await new Promise(() => {});
   }
 
   if (payload.type === 'tcp') {
@@ -423,13 +480,40 @@ export async function startClientMode(options = {}) {
     console.log(chalk.bold('  🔌 Custom TCP Port Exposed'));
     console.log(chalk.dim('  ─────────────────────────────────'));
     console.log(`  The host is exposing a generic TCP service on port ${payload.port}.`);
-    console.log(`  To connect, run this command in a separate terminal:`);
-    console.log(chalk.cyan(`  cloudflared access tcp --hostname ${extractHostname(payload.url)} --url 127.0.0.1:${payload.port}`));
+
+    const hostname = extractHostname(payload.url);
+    const localPort = payload.port;
+
+    console.log(chalk.dim(`  Starting local cloudflared proxy to ${hostname}...`));
     console.log('');
-    console.log(`  Then connect your local client (e.g. Postgres, VNC, RDP) to ${chalk.green('127.0.0.1:' + payload.port)}`);
-    console.log('');
-    logSessionEvent('client_tcp_mode', { uid: targetUid, port: payload.port });
-    process.exit(0);
+
+    try {
+      const { execa: execaFn } = await import('execa');
+      const child = execaFn('cloudflared', ['access', 'tcp', '--hostname', hostname, '--url', `127.0.0.1:${localPort}`], {
+        stdio: 'inherit',
+        reject: false,
+      });
+
+      trackPID(child.pid);
+      console.log(chalk.green(`  ✅ Local proxy active! Connect your client to ${chalk.bold('127.0.0.1:' + localPort)}`));
+      console.log(chalk.dim('  Press Ctrl+C to terminate the tunnel.'));
+      logSessionEvent('client_tcp_mode', { uid: targetUid, port: localPort, hostname });
+
+      const result = await child;
+      untrackPID(child.pid);
+
+      if (result.exitCode !== 0) {
+        console.log(chalk.red(`  ❌ Cloudflared exited with code ${result.exitCode}`));
+      }
+    } catch (err) {
+      console.log(chalk.red(`  ❌ Could not start cloudflared proxy: ${err.message}`));
+      console.log(chalk.dim('  Fallback: run manually in another terminal:'));
+      console.log(chalk.cyan(`  cloudflared access tcp --hostname ${hostname} --url 127.0.0.1:${localPort}`));
+      console.log('');
+      console.log(`  Then connect your local client to ${chalk.green('127.0.0.1:' + localPort)}`);
+    }
+    await cleanupAll();
+    return;
   }
 
   const tunnelUrl = payload.url;
@@ -452,6 +536,45 @@ export async function startClientMode(options = {}) {
       logSessionEvent('client_ephemeral_key_failed', { error: err.message }, 'warn');
       privateKeyPath = null;
     }
+  }
+
+  // ─── One-Time File Share Auto-Download ────────────────────
+  if (payload.oneTime && payload.oneTimeSharePath) {
+    console.log('');
+    console.log(chalk.bold.magenta('  📦 One-Time File Share'));
+    console.log(chalk.dim('  ──────────────────────────────────────'));
+    console.log(chalk.dim(`  Host is sharing: ${chalk.cyan(payload.oneTimeSharePath)}`));
+    console.log(chalk.dim('  This is a one-time transfer — the session will be revoked after download.'));
+    console.log('');
+
+    const localDest = await promptLocalPath('download destination');
+
+    await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, 'one-time-download');
+    logSessionEvent('client_one_time_download_start', { uid: targetUid, remotePath: payload.oneTimeSharePath });
+
+    const success = await downloadSpecificRemotePath(username, hostname, privateKeyPath, payload.oneTimeSharePath, localDest);
+
+    if (success) {
+      console.log(chalk.green('  ✅ One-time file transfer completed successfully!'));
+
+      // Verify download checksum
+      const dlHash = await calculateChecksum(localDest);
+      if (dlHash) console.log(chalk.green(`  🔍 File Intact. SHA-256: ${dlHash.substring(0, 16)}...`));
+
+      // Auto-revoke the UID from broker
+      console.log(chalk.dim('  Revoking session from broker...'));
+      await revokeUID(BROKER_URL, targetUid);
+      console.log(chalk.green('  🔒 Session revoked. No further access is possible.'));
+
+      logSessionEvent('client_one_time_download_complete', { uid: targetUid });
+      recordEvent('one_time_transfer_complete', { uid: targetUid, localDest });
+    } else {
+      console.log(chalk.red('  ❌ One-time file transfer failed.'));
+      logSessionEvent('client_one_time_download_failed', { uid: targetUid }, 'error');
+    }
+
+    await cleanupAll();
+    return;
   }
 
   // Ask to save alias if we entered manually

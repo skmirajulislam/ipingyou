@@ -530,7 +530,7 @@ export async function startAIMode() {
     const trimmed = task.trim();
     if (/^(exit|quit|q)$/i.test(trimmed)) break;
     // Try AI Transfer Assistant parsing first (upload/download automation)
-    if (await tryAITransfer(trimmed)) continue;
+    if (await tryAITransfer(trimmed, context)) continue;
     if (await maybeRunMatchedAppAction(trimmed)) continue;
     await runAgentTurn(apiKey, model, context, messages, trimmed);
   }
@@ -538,7 +538,7 @@ export async function startAIMode() {
   await cleanupAll();
 }
 
-async function tryAITransfer(task) {
+async function tryAITransfer(task, context) {
   const uploadRegex = /\b(?:upload|send|scp)\b\s+(.+?)\s+(?:to|->|into)\s+(.+)$/i;
   const downloadRegex = /\b(?:download|get|fetch|scp)\b\s+(.+?)\s+(?:to|into|->)\s+(.+)$/i;
   let m = task.match(uploadRegex);
@@ -557,14 +557,58 @@ async function tryAITransfer(task) {
   console.log('');
   console.log(chalk.cyan('  AI Transfer Assistant: detected a transfer intent.'));
 
+  const localPath = direction === 'upload' ? src : dst;
+  const remotePath = direction === 'upload' ? dst : src;
+
+  // ─── Reuse existing remote context if available ─────────────
+  if (context && context.scope === 'remote' && context.hostname && context.username) {
+    console.log(chalk.dim(`  Using active remote session: ${context.username}@${context.hostname}`));
+
+    const { getSshControlOptions, formatScpRemotePath } = await import('../lib/ssh.js');
+
+    const proxyCommand = `cloudflared access tcp --hostname ${context.hostname}`;
+    const scpArgs = [
+      '-r',
+      '-o', `ProxyCommand=${proxyCommand}`,
+      '-o', 'StrictHostKeyChecking=accept-new',
+      '-o', 'IdentitiesOnly=yes',
+      ...getSshControlOptions(context.hostname),
+    ];
+    if (context.privateKeyPath) {
+      scpArgs.push('-i', context.privateKeyPath, '-o', 'IdentityAgent=none');
+    }
+
+    const remoteSpec = `${context.username}@${context.hostname}:${formatScpRemotePath(remotePath)}`;
+    if (direction === 'upload') {
+      scpArgs.push(localPath, remoteSpec);
+    } else {
+      scpArgs.push(remoteSpec, localPath);
+    }
+
+    try {
+      const result = await execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+      if (result.exitCode === 0) {
+        console.log(chalk.green('  ✅ Transfer completed via active remote session.'));
+        recordEvent('ai_transfer_success', { direction, localPath, remotePath, hostname: context.hostname, reusedContext: true });
+      } else {
+        console.log(chalk.red(`  ❌ Transfer failed (exit code ${result.exitCode})`));
+        recordEvent('ai_transfer_failed', { direction, localPath, remotePath, hostname: context.hostname, reusedContext: true });
+      }
+      return true;
+    } catch (err) {
+      console.log(chalk.red(`  ❌ Transfer error: ${err.message}`));
+      return true;
+    }
+  }
+
+  // ─── Fallback: prompt for UID/password (local scope) ────────
+  console.log(chalk.dim('  No active remote session — prompting for connection details.'));
+
   const answers = await inquirer.prompt([
     { type: 'input', name: 'uid', message: 'Target host UID:', validate: v => v.trim().length > 0 || 'Required' },
     { type: 'password', name: 'password', message: 'Session password:', mask: '*', validate: v => v.trim().length > 0 || 'Required' },
     { type: 'input', name: 'username', message: 'SSH username on host:', default: process.env.USER || process.env.USERNAME || 'root' }
   ]);
-
-  const localPath = direction === 'upload' ? src : dst;
-  const remotePath = direction === 'upload' ? dst : src;
 
   try {
     const ok = await performSCPNonInteractive({ brokerUrl: BROKER_URL, uid: answers.uid.trim(), password: answers.password.trim(), username: answers.username.trim(), direction, localPath, remotePath });
@@ -576,3 +620,4 @@ async function tryAITransfer(task) {
     return true;
   }
 }
+

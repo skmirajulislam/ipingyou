@@ -140,6 +140,8 @@ function showRichHelp() {
   console.log(`    $ npx ipingyou doctor           ${chalk.dim('# Diagnose local setup')}`);
   console.log(`    $ npx ipingyou panic            ${chalk.dim('# Self-destruct and wipe memory/traces')}`);
   console.log(`    $ npx ipingyou service install  ${chalk.dim('# Install Host mode as a background daemon')}`);
+  console.log(`    $ npx ipingyou allowlist        ${chalk.dim('# Manage AI command allowlist')}`);
+  console.log(`    $ npx ipingyou history          ${chalk.dim('# View session event logs')}`);
   console.log('');
 }
 
@@ -361,6 +363,160 @@ program
       }
     } catch (err) {
       fatal('service', err);
+    }
+  });
+
+program
+  .command('allowlist')
+  .description('Manage AI command allowlist — add, remove, or list safe regex patterns')
+  .argument('[action]', 'Action: list, add, remove', 'list')
+  .argument('[pattern]', 'Regex pattern to add or remove')
+  .action(async (action, pattern) => {
+    try {
+      showBanner();
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const path = await import('node:path');
+      const { ensureAllowlistFile, getAllowlistRegexes } = await import('./lib/allowlist.js');
+
+      const allowlistPath = ensureAllowlistFile();
+
+      if (action === 'list' || !action) {
+        const patterns = getAllowlistRegexes();
+        console.log(chalk.bold.cyan('  📋 AI Command Allowlist'));
+        console.log(chalk.dim('  ─────────────────────────────────────'));
+        console.log(chalk.dim(`  File: ${allowlistPath}`));
+        console.log('');
+        if (patterns.length === 0) {
+          console.log(chalk.dim('  No patterns configured.'));
+        } else {
+          const raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+          raw.forEach((p, i) => {
+            console.log(`  ${chalk.green(i + 1)}. ${chalk.white(p)}`);
+          });
+        }
+        console.log('');
+        console.log(chalk.dim('  Usage: ipingyou allowlist add "^my-safe-command"'));
+        console.log(chalk.dim('         ipingyou allowlist remove "^my-safe-command"'));
+      } else if (action === 'add') {
+        if (!pattern) {
+          console.log(chalk.red('  ❌ Missing pattern. Usage: ipingyou allowlist add "^my-command"'));
+          process.exit(1);
+        }
+        // Validate regex
+        try { new RegExp(pattern); } catch (err) {
+          console.log(chalk.red(`  ❌ Invalid regex: ${err.message}`));
+          process.exit(1);
+        }
+        const raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+        if (raw.includes(pattern)) {
+          console.log(chalk.yellow(`  ⚠️  Pattern already exists: ${pattern}`));
+        } else {
+          raw.push(pattern);
+          fs.writeFileSync(allowlistPath, JSON.stringify(raw, null, 2), { mode: 0o600 });
+          console.log(chalk.green(`  ✅ Added: ${chalk.white(pattern)}`));
+        }
+      } else if (action === 'remove') {
+        if (!pattern) {
+          console.log(chalk.red('  ❌ Missing pattern. Usage: ipingyou allowlist remove "^my-command"'));
+          process.exit(1);
+        }
+        const raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+        const idx = raw.indexOf(pattern);
+        if (idx === -1) {
+          console.log(chalk.yellow(`  ⚠️  Pattern not found: ${pattern}`));
+        } else {
+          raw.splice(idx, 1);
+          fs.writeFileSync(allowlistPath, JSON.stringify(raw, null, 2), { mode: 0o600 });
+          console.log(chalk.green(`  ✅ Removed: ${chalk.white(pattern)}`));
+        }
+      } else {
+        console.log(chalk.red(`  ❌ Unknown action: ${action}. Use list, add, or remove.`));
+      }
+    } catch (err) {
+      fatal('allowlist', err);
+    }
+  });
+
+program
+  .command('history')
+  .description('View session event logs from ~/.ipingyou/logs')
+  .option('-n, --lines <count>', 'Number of recent events to show', '25')
+  .option('--type <type>', 'Filter by event type (e.g. ssh, scp, ai)')
+  .option('--json', 'Output raw JSON lines')
+  .action(async (commandOptions) => {
+    try {
+      showBanner();
+      const fs = await import('node:fs');
+      const os = await import('node:os');
+      const pathMod = await import('node:path');
+
+      const logFile = pathMod.default.join(os.default.homedir(), '.ipingyou', 'logs', 'session-events.jsonl');
+
+      console.log(chalk.bold.cyan('  📜 Session Event History'));
+      console.log(chalk.dim('  ─────────────────────────────────────'));
+
+      if (!fs.existsSync(logFile)) {
+        console.log(chalk.dim('  No session history found yet.'));
+        console.log(chalk.dim(`  Events are recorded to: ${logFile}`));
+        return;
+      }
+
+      const raw = fs.readFileSync(logFile, 'utf8').trim();
+      if (!raw) {
+        console.log(chalk.dim('  Log file is empty.'));
+        return;
+      }
+
+      let events = raw.split('\n').map(line => {
+        try { return JSON.parse(line); } catch { return null; }
+      }).filter(Boolean);
+
+      // Filter by type if specified
+      if (commandOptions.type) {
+        const filter = commandOptions.type.toLowerCase();
+        events = events.filter(e => (e.type || '').toLowerCase().includes(filter));
+      }
+
+      // Take last N events
+      const count = parseInt(commandOptions.lines) || 25;
+      events = events.slice(-count);
+
+      if (events.length === 0) {
+        console.log(chalk.dim('  No matching events found.'));
+        return;
+      }
+
+      console.log(chalk.dim(`  Showing last ${events.length} event(s)${commandOptions.type ? ` matching "${commandOptions.type}"` : ''}:`));
+      console.log('');
+
+      if (commandOptions.json) {
+        events.forEach(e => console.log(JSON.stringify(e)));
+      } else {
+        const levelColors = {
+          info: chalk.blue,
+          warn: chalk.yellow,
+          error: chalk.red,
+        };
+
+        events.forEach(e => {
+          const time = e.time ? new Date(e.time).toLocaleString() : '?';
+          const level = (e.level || 'info').toUpperCase().padEnd(5);
+          const colorFn = levelColors[e.level] || chalk.white;
+          const type = chalk.cyan((e.type || 'unknown').padEnd(35));
+          const details = e.details && Object.keys(e.details).length > 0
+            ? chalk.dim(JSON.stringify(e.details))
+            : '';
+
+          console.log(`  ${chalk.dim(time)}  ${colorFn(level)}  ${type}  ${details}`);
+        });
+      }
+
+      console.log('');
+      console.log(chalk.dim(`  Log file: ${logFile}`));
+      console.log(chalk.dim(`  Total events in file: ${raw.split('\\n').length}`));
+    } catch (err) {
+      fatal('history', err);
     }
   });
 

@@ -248,6 +248,12 @@ app.get('/resolve/:uid', (req, res) => {
 
     // Return encrypted blob — client decrypts
     res.json({ uid, iv: entry.iv, ciphertext: entry.ciphertext, salt: entry.salt });
+
+    // Enforce one-time sharing: auto-delete UID after first successful resolve
+    if (entry.oneTime) {
+      store.delete(uid);
+      console.log(`🔒 [${new Date().toLocaleTimeString()}] One-time UID ${uid} auto-revoked after first resolve`);
+    }
   } catch (err) {
     console.error('❌ Resolve error:', err.message);
     res.status(500).json({ error: 'Internal server error' });

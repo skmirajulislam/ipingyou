@@ -287,17 +287,174 @@ async function startLocalHostDashboard(uid, password, serviceConfig) {
 
   app.get('/', (_req, res) => {
     res.type('html').send(`<!doctype html>
-<html><head><meta charset="utf-8"><title>iPingYou Host Dashboard</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;margin:32px;line-height:1.5;color:#17202a}code{background:#f2f4f7;padding:2px 6px;border-radius:4px}.card{border:1px solid #d0d5dd;border-radius:8px;padding:16px;max-width:760px}</style></head>
-<body><h1>iPingYou Host Dashboard</h1><div class="card">
-<p><strong>UID:</strong> <code>${uid}</code></p>
-<p><strong>Password:</strong> <code>${password}</code></p>
-<p><strong>Service:</strong> ${serviceConfig.type} on port ${serviceConfig.port}</p>
-<p><strong>Approval gate:</strong> ${serviceConfig.approvalRequired ? 'enabled' : 'disabled'}</p>
-<p><strong>Drop folder:</strong> <code>${serviceConfig.sharedDropPath || 'none'}</code></p>
-<p><strong>One-time share:</strong> <code>${serviceConfig.oneTimeSharePath || 'none'}</code></p>
-<p>Use the terminal host controls to approve clients, start chat, mirror sessions, or revoke.</p>
-</div></body></html>`);
+<html lang="en"><head><meta charset="utf-8"><title>iPingYou Host Dashboard</title>
+<style>
+:root{--bg:#0f172a;--panel:#1e293b;--border:#334155;--text:#f8fafc;--primary:#38bdf8;--accent:#818cf8;--green:#22c55e;--red:#ef4444;--yellow:#eab308;--dim:#94a3b8}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding:2rem}
+h1{font-size:1.5rem;margin-bottom:0.5rem;display:flex;align-items:center;gap:0.5rem}
+h2{font-size:1.1rem;color:var(--primary);margin-bottom:1rem;text-transform:uppercase;letter-spacing:0.05em}
+.header{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:1.5rem 2rem;margin-bottom:1.5rem;display:flex;justify-content:space-between;align-items:center}
+.badge{background:var(--green);color:#000;padding:0.2rem 0.6rem;border-radius:999px;font-size:0.75rem;font-weight:700;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.6}}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem}
+@media(max-width:800px){.grid{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:1.5rem}
+.info-row{display:flex;justify-content:space-between;padding:0.5rem 0;border-bottom:1px solid var(--border)}
+.info-row:last-child{border:none}
+.info-label{color:var(--dim);font-size:0.85rem}
+.info-value{font-weight:600;font-size:0.85rem}
+code{background:var(--bg);padding:2px 8px;border-radius:4px;font-size:0.85rem}
+.btn{border:none;padding:0.6rem 1.2rem;border-radius:8px;font-weight:700;cursor:pointer;font-size:0.85rem;transition:all 0.2s}
+.btn:hover{transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+.btn:active{transform:scale(0.97)}
+.btn-approve{background:var(--green);color:#000}.btn-deny{background:var(--red);color:white}
+.btn-revoke{background:var(--red);color:white;padding:0.5rem 1rem}
+.approval-item{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-bottom:0.75rem;animation:fadeIn 0.3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.approval-item .meta{font-size:0.8rem;color:var(--dim);margin-bottom:0.5rem}
+.approval-item .actions{display:flex;gap:0.5rem;margin-top:0.75rem}
+.status-badge{display:inline-block;padding:0.15rem 0.5rem;border-radius:999px;font-size:0.75rem;font-weight:600}
+.status-pending{background:var(--yellow);color:#000}
+.status-approved{background:var(--green);color:#000}
+.status-denied{background:var(--red);color:white}
+.empty{color:var(--dim);font-style:italic;font-size:0.9rem;padding:1rem 0}
+.client-card{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:0.8rem 1rem;margin-bottom:0.5rem;font-size:0.85rem}
+.client-card strong{color:var(--primary)}
+#toast{position:fixed;bottom:2rem;right:2rem;background:var(--green);color:#000;padding:0.8rem 1.5rem;border-radius:8px;font-weight:700;opacity:0;transition:opacity 0.3s;pointer-events:none}
+#toast.show{opacity:1}
+</style></head>
+<body>
+<div class="header">
+  <div><h1>🛡️ iPingYou Host Dashboard</h1><span style="color:var(--dim);font-size:0.85rem">UID: <code>${uid}</code></span></div>
+  <div style="display:flex;gap:1rem;align-items:center">
+    <span class="badge">● LIVE</span>
+    <button class="btn btn-revoke" onclick="revokeSession()">🚫 Revoke Session</button>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>📊 Session Info</h2>
+    <div class="info-row"><span class="info-label">UID</span><span class="info-value"><code>${uid}</code></span></div>
+    <div class="info-row"><span class="info-label">Password</span><span class="info-value"><code>${password}</code></span></div>
+    <div class="info-row"><span class="info-label">Service</span><span class="info-value">${serviceConfig.type.toUpperCase()} on port ${serviceConfig.port}</span></div>
+    <div class="info-row"><span class="info-label">Approval Gate</span><span class="info-value">${serviceConfig.approvalRequired ? '<span style="color:var(--green)">✓ Enabled</span>' : '<span style="color:var(--dim)">Disabled</span>'}</span></div>
+    <div class="info-row"><span class="info-label">Drop Folder</span><span class="info-value"><code>${serviceConfig.sharedDropPath || 'none'}</code></span></div>
+    <div class="info-row"><span class="info-label">One-Time Share</span><span class="info-value"><code>${serviceConfig.oneTimeSharePath || 'none'}</code></span></div>
+    <div class="info-row"><span class="info-label">Chat</span><span class="info-value">${serviceConfig.chatUrl ? '<span style="color:var(--green)">Active</span>' : '<span style="color:var(--dim)">Not started</span>'}</span></div>
+    <div class="info-row"><span class="info-label">Uptime</span><span class="info-value" id="uptime">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>✅ Pending Approvals <span id="approval-count" style="color:var(--dim);font-size:0.8rem"></span></h2>
+    <div id="approvals"><p class="empty">No pending requests</p></div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:1.5rem">
+  <h2>📡 Connected Clients <span id="client-count" style="color:var(--dim);font-size:0.8rem"></span></h2>
+  <div id="clients"><p class="empty">No clients connected yet</p></div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const startedAt = new Date("${startedAt}");
+const password = ${JSON.stringify(password)};
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+function updateUptime() {
+  const diff = Math.floor((Date.now() - startedAt.getTime()) / 1000);
+  const h = Math.floor(diff / 3600);
+  const m = Math.floor((diff % 3600) / 60);
+  const s = diff % 60;
+  document.getElementById('uptime').textContent = h + 'h ' + m + 'm ' + s + 's';
+}
+setInterval(updateUptime, 1000);
+updateUptime();
+
+// SSE for live updates
+const es = new EventSource('/api/events');
+es.addEventListener('approvals', (e) => {
+  try {
+    const data = JSON.parse(e.data);
+    renderApprovals(data.approvals || []);
+  } catch {}
+});
+
+function renderApprovals(approvals) {
+  const container = document.getElementById('approvals');
+  const pending = approvals.filter(a => a.status === 'pending');
+  const decided = approvals.filter(a => a.status !== 'pending').slice(-5);
+  document.getElementById('approval-count').textContent = pending.length > 0 ? '(' + pending.length + ' pending)' : '';
+
+  if (approvals.length === 0) {
+    container.innerHTML = '<p class="empty">No approval requests yet</p>';
+    return;
+  }
+
+  let html = '';
+  for (const req of pending) {
+    html += '<div class="approval-item">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center">'
+      + '<strong>Request ' + req.id + '</strong>'
+      + '<span class="status-badge status-pending">PENDING</span></div>'
+      + '<div class="meta">Submitted: ' + new Date(req.createdAt).toLocaleTimeString() + '</div>'
+      + '<div class="actions">'
+      + '<button class="btn btn-approve" onclick="decide(\\'' + req.id + '\\',\\'approved\\')">✅ Approve</button>'
+      + '<button class="btn btn-deny" onclick="decide(\\'' + req.id + '\\',\\'denied\\')">❌ Deny</button>'
+      + '</div></div>';
+  }
+  for (const req of decided) {
+    const cls = req.status === 'approved' ? 'status-approved' : 'status-denied';
+    html += '<div class="approval-item" style="opacity:0.6">'
+      + '<div style="display:flex;justify-content:space-between;align-items:center">'
+      + '<strong>Request ' + req.id + '</strong>'
+      + '<span class="status-badge ' + cls + '">' + req.status.toUpperCase() + '</span></div>'
+      + '<div class="meta">Decided: ' + (req.decidedAt ? new Date(req.decidedAt).toLocaleTimeString() : 'N/A') + '</div>'
+      + '</div>';
+  }
+  container.innerHTML = html;
+}
+
+async function decide(requestId, decision) {
+  try {
+    const res = await fetch('/api/approval', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requestId, decision })
+    });
+    if (res.ok) showToast(decision === 'approved' ? '✅ Approved!' : '❌ Denied!');
+    else showToast('Failed: ' + (await res.json()).error);
+  } catch (err) { showToast('Error: ' + err.message); }
+}
+
+async function revokeSession() {
+  if (!confirm('Are you sure you want to revoke this session? All clients will lose access.')) return;
+  try {
+    const res = await fetch('/api/revoke', { method: 'POST' });
+    if (res.ok) { showToast('🚫 Session revoked!'); document.querySelector('.badge').textContent = '● REVOKED'; document.querySelector('.badge').style.background = 'var(--red)'; }
+    else showToast('Failed to revoke');
+  } catch (err) { showToast('Error: ' + err.message); }
+}
+
+// Poll client telemetry (separate from SSE for simplicity)
+async function pollClients() {
+  try {
+    const res = await fetch('/api/status');
+    if (!res.ok) return;
+    // Client data is fetched from broker by SSE push. Let's also add a client endpoint.
+  } catch {}
+}
+</script>
+</body></html>`);
   });
 
   return new Promise((resolve) => {
