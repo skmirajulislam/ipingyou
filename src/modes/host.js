@@ -221,7 +221,7 @@ async function promptOneTimeSharePath() {
   return sharePath.trim() === '~' ? os.homedir() : sharePath.trim().replace(/^~(?=\/)/, os.homedir());
 }
 
-async function startLocalHostDashboard(uid, password, serviceConfig) {
+async function startLocalHostDashboard(uid, password, serviceConfig, hostToken) {
   const { default: express } = await import('express');
   const { default: open } = await import('open');
   const app = express();
@@ -251,9 +251,9 @@ async function startLocalHostDashboard(uid, password, serviceConfig) {
     const push = async () => {
       if (closed) return;
       try {
-        const approvals = await fetchApprovalRequests(BROKER_URL, uid).catch(() => ({ approvals: [] }));
+        const data = await fetchApprovalRequests(BROKER_URL, uid, hostToken).catch(() => ({ approvals: [] }));
         res.write(`event: approvals\n`);
-        res.write(`data: ${JSON.stringify(approvals)}\n\n`);
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
       } catch { }
     };
 
@@ -263,11 +263,30 @@ async function startLocalHostDashboard(uid, password, serviceConfig) {
     await push();
   });
 
+  // CSRF Protection Middleware for all mutating endpoints
+  app.use((req, res, next) => {
+    if (req.method !== 'POST') return next();
+    
+    // Express runs on localhost, ensure requests originate from the same host
+    const origin = req.headers.origin;
+    const referer = req.headers.referer;
+    
+    // We expect origin to be http://127.0.0.1:<port>
+    const isLocalOrigin = origin && (origin.startsWith('http://127.0.0.1:') || origin.startsWith('http://localhost:'));
+    const isLocalReferer = referer && (referer.startsWith('http://127.0.0.1:') || referer.startsWith('http://localhost:'));
+    
+    if (!isLocalOrigin && !isLocalReferer) {
+      console.warn(chalk.yellow(`\n  ⚠️  Blocked potential CSRF attack from origin: ${origin || referer || 'unknown'}`));
+      return res.status(403).json({ error: 'CSRF validation failed' });
+    }
+    next();
+  });
+
   app.post('/api/approval', async (req, res) => {
     const { requestId, decision } = req.body || {};
     if (!requestId || !decision) return res.status(400).json({ error: 'requestId and decision required' });
     try {
-      await decideApprovalRequest(BROKER_URL, uid, requestId, decision);
+      await decideApprovalRequest(BROKER_URL, uid, requestId, decision, hostToken);
       recordEvent('approval_decision', { uid, requestId, decision, via: 'dashboard' });
       res.json({ ok: true });
     } catch (err) {
@@ -277,7 +296,7 @@ async function startLocalHostDashboard(uid, password, serviceConfig) {
 
   app.post('/api/revoke', async (_req, res) => {
     try {
-      await revokeUID(BROKER_URL, uid);
+      await revokeUID(BROKER_URL, uid, hostToken);
       recordEvent('uid_revoked', { uid, via: 'dashboard' });
       res.json({ ok: true });
     } catch (err) {
@@ -337,7 +356,7 @@ code{background:var(--bg);padding:2px 8px;border-radius:4px;font-size:0.85rem}
   <div class="card">
     <h2>📊 Session Info</h2>
     <div class="info-row"><span class="info-label">UID</span><span class="info-value"><code>${uid}</code></span></div>
-    <div class="info-row"><span class="info-label">Password</span><span class="info-value"><code>${password}</code></span></div>
+    <div class="info-row"><span class="info-label">Password</span><span class="info-value"><code>[Hidden — see terminal]</code></span></div>
     <div class="info-row"><span class="info-label">Service</span><span class="info-value">${serviceConfig.type.toUpperCase()} on port ${serviceConfig.port}</span></div>
     <div class="info-row"><span class="info-label">Approval Gate</span><span class="info-value">${serviceConfig.approvalRequired ? '<span style="color:var(--green)">✓ Enabled</span>' : '<span style="color:var(--dim)">Disabled</span>'}</span></div>
     <div class="info-row"><span class="info-label">Drop Folder</span><span class="info-value"><code>${serviceConfig.sharedDropPath || 'none'}</code></span></div>
@@ -361,7 +380,6 @@ code{background:var(--bg);padding:2px 8px;border-radius:4px;font-size:0.85rem}
 
 <script>
 const startedAt = new Date("${startedAt}");
-const password = ${JSON.stringify(password)};
 
 function showToast(msg) {
   const t = document.getElementById('toast');
@@ -408,8 +426,8 @@ function renderApprovals(approvals) {
       + '<span class="status-badge status-pending">PENDING</span></div>'
       + '<div class="meta">Submitted: ' + new Date(req.createdAt).toLocaleTimeString() + '</div>'
       + '<div class="actions">'
-      + '<button class="btn btn-approve" onclick="decide(\\'' + req.id + '\\',\\'approved\\')">✅ Approve</button>'
-      + '<button class="btn btn-deny" onclick="decide(\\'' + req.id + '\\',\\'denied\\')">❌ Deny</button>'
+      + '<button class="btn btn-approve" data-id="' + req.id + '" data-decision="approved">✅ Approve</button>'
+      + '<button class="btn btn-deny" data-id="' + req.id + '" data-decision="denied">❌ Deny</button>'
       + '</div></div>';
   }
   for (const req of decided) {
@@ -422,6 +440,13 @@ function renderApprovals(approvals) {
       + '</div>';
   }
   container.innerHTML = html;
+
+  // Attach click handlers via event delegation (avoids inline quote escaping issues)
+  container.querySelectorAll('[data-decision]').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      decide(btn.getAttribute('data-id'), btn.getAttribute('data-decision'));
+    });
+  });
 }
 
 async function decide(requestId, decision) {
@@ -520,7 +545,7 @@ async function spawnPrivateBroker() {
 /**
  * Display the host dashboard and handle user input.
  */
-async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProcess) {
+async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProcess, hostToken) {
   let chatServerInstance = null;
   let chatTunnelProcess = null;
   let dashboardInstance = null;
@@ -650,7 +675,8 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
               chatTunnelProcess = null;
               chatServerInstance = null;
               delete serviceConfig.chatUrl;
-              await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+              const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+              if (res.success && res.hostToken) hostToken = res.hostToken;
               renderDashboard();
             }
           });
@@ -658,7 +684,8 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           console.log(chalk.dim('  Provisioning Cloudflare tunnel for chat...'));
           chatTunnelProcess = await spawnTunnelSupervised(`http://localhost:${chatServerInstance.port}`, async (newUrl) => {
             serviceConfig.chatUrl = newUrl;
-            await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+            const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+            if (res.success && res.hostToken) hostToken = res.hostToken;
             renderDashboard();
           });
 
@@ -671,7 +698,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         }
 
         case 'dashboard': {
-          dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig);
+          dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig, hostToken);
           logSessionEvent('host_dashboard_opened');
           return waitForAction();
         }
@@ -757,7 +784,8 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         }
 
         case 'reregister':
-          await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+          const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+          if (res.success && res.hostToken) hostToken = res.hostToken;
           logSessionEvent('host_broker_reregistered');
           return waitForAction();
 
@@ -968,21 +996,23 @@ export async function startHostMode() {
   }
 
   let tunnelUrl = null;
+  let hostToken = null;
   const tunnelProcess = await spawnTunnelSupervised(targetUrl, async (newUrl) => {
     tunnelUrl = newUrl;
     // Register or re-register with broker when tunnel is spawned/respawned
-    const registered = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
-    if (!registered) {
+    const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+    if (!res.success) {
       console.error(chalk.red(`\n  ❌ FATAL: Could not register with broker at ${BROKER_URL}`));
       logSessionEvent('host_broker_register_failed', { broker: BROKER_URL }, 'error');
       process.exit(1);
     }
+    if (res.hostToken) hostToken = res.hostToken;
   });
 
   // Wait for the first URL to be generated before showing the dashboard
   await waitForValue(() => tunnelUrl, 30000, 'Cloudflare tunnel startup');
 
-  setRevokeOnExit(uid, BROKER_URL);
+  setRevokeOnExit(uid, BROKER_URL, () => hostToken);
 
-  await hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProcess);
+  await hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProcess, hostToken);
 }

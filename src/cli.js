@@ -390,10 +390,14 @@ program
         if (patterns.length === 0) {
           console.log(chalk.dim('  No patterns configured.'));
         } else {
-          const raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
-          raw.forEach((p, i) => {
-            console.log(`  ${chalk.green(i + 1)}. ${chalk.white(p)}`);
-          });
+          try {
+            const raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+            raw.forEach((p, i) => {
+              console.log(`  ${chalk.green(i + 1)}. ${chalk.white(p)}`);
+            });
+          } catch (e) {
+            console.log(chalk.red('  ❌ Allowlist file is corrupted.'));
+          }
         }
         console.log('');
         console.log(chalk.dim('  Usage: ipingyou allowlist add "^my-safe-command"'));
@@ -408,7 +412,8 @@ program
           console.log(chalk.red(`  ❌ Invalid regex: ${err.message}`));
           process.exit(1);
         }
-        const raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+        let raw = [];
+        try { raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8')); } catch {}
         if (raw.includes(pattern)) {
           console.log(chalk.yellow(`  ⚠️  Pattern already exists: ${pattern}`));
         } else {
@@ -421,7 +426,8 @@ program
           console.log(chalk.red('  ❌ Missing pattern. Usage: ipingyou allowlist remove "^my-command"'));
           process.exit(1);
         }
-        const raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8'));
+        let raw = [];
+        try { raw = JSON.parse(fs.readFileSync(allowlistPath, 'utf8')); } catch {}
         const idx = raw.indexOf(pattern);
         if (idx === -1) {
           console.log(chalk.yellow(`  ⚠️  Pattern not found: ${pattern}`));
@@ -514,7 +520,7 @@ program
 
       console.log('');
       console.log(chalk.dim(`  Log file: ${logFile}`));
-      console.log(chalk.dim(`  Total events in file: ${raw.split('\\n').length}`));
+      console.log(chalk.dim(`  Total events in file: ${raw.split('\n').length}`));
     } catch (err) {
       fatal('history', err);
     }

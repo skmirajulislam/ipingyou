@@ -557,8 +557,12 @@ async function tryAITransfer(task, context) {
   console.log('');
   console.log(chalk.cyan('  AI Transfer Assistant: detected a transfer intent.'));
 
-  const localPath = direction === 'upload' ? src : dst;
-  const remotePath = direction === 'upload' ? dst : src;
+  let localPath = direction === 'upload' ? src : dst;
+  let remotePath = direction === 'upload' ? dst : src;
+
+  // Prevent SCP argument injection (e.g. if path starts with -oProxyCommand=...)
+  if (localPath.startsWith('-')) localPath = './' + localPath;
+  if (remotePath.startsWith('-')) remotePath = './' + remotePath;
 
   // ─── Reuse existing remote context if available ─────────────
   if (context && context.scope === 'remote' && context.hostname && context.username) {

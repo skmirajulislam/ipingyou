@@ -73,16 +73,18 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
       throw new Error(data.error || `HTTP ${res.status}`);
     }
 
+    const result = await res.json();
     spinner.succeed(`Registered with broker ${chalk.dim(`(${brokerUrl})`)} ${chalk.green('[E2E encrypted]')}`);
     logSessionEvent('broker_registered', { uid, broker: brokerUrl });
-    return true;
+    // Return the host authentication token — needed for all host-only broker operations
+    return { success: true, hostToken: result.hostToken || null };
   } catch (err) {
     spinner.fail(`Broker registration failed: ${err.message}`);
     console.error(chalk.red(`  ❌ Error: ${err.message}`));
     logSessionEvent('broker_register_error', { uid, broker: brokerUrl, error: err.message }, 'error');
     console.log(chalk.yellow('  ⚠️  Remote clients won\'t be able to find you without the broker.'));
     console.log(chalk.dim('     Share the tunnel URL directly if needed.'));
-    return false;
+    return { success: false, hostToken: null };
   }
 }
 
@@ -123,8 +125,10 @@ export async function waitForApproval(brokerUrl, uid, requestId, timeoutMs = 300
   throw new Error('Timed out waiting for host approval');
 }
 
-export async function fetchApprovalRequests(brokerUrl, uid) {
-  const res = await fetchWithLog('approval_requests', `${brokerUrl}/approval-requests/${uid}`);
+export async function fetchApprovalRequests(brokerUrl, uid, hostToken) {
+  const res = await fetchWithLog('approval_requests', `${brokerUrl}/approval-requests/${uid}`, {
+    headers: hostToken ? { 'x-host-token': hostToken } : {},
+  });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     logSessionEvent('broker_approval_fetch_failed', { uid, status: res.status, error: data.error || 'unknown' }, 'error');
@@ -133,8 +137,11 @@ export async function fetchApprovalRequests(brokerUrl, uid) {
   return res.json();
 }
 
-export async function decideApprovalRequest(brokerUrl, uid, requestId, decision) {
-  const res = await fetchWithLog('approval_decision', `${brokerUrl}/approval-requests/${uid}/${requestId}/${decision}`, { method: 'POST' });
+export async function decideApprovalRequest(brokerUrl, uid, requestId, decision, hostToken) {
+  const res = await fetchWithLog('approval_decision', `${brokerUrl}/approval-requests/${uid}/${requestId}/${decision}`, {
+    method: 'POST',
+    headers: hostToken ? { 'x-host-token': hostToken } : {},
+  });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
     logSessionEvent('broker_approval_decision_failed', { uid, requestId, decision, status: res.status, error: data.error || 'unknown' }, 'error');
@@ -144,9 +151,12 @@ export async function decideApprovalRequest(brokerUrl, uid, requestId, decision)
   return res.json();
 }
 
-export async function revokeUID(brokerUrl, uid) {
+export async function revokeUID(brokerUrl, uid, hostToken) {
   try {
-    await fetchWithLog('revoke', `${brokerUrl}/revoke/${uid}`, { method: 'DELETE' });
+    await fetchWithLog('revoke', `${brokerUrl}/revoke/${uid}`, {
+      method: 'DELETE',
+      headers: hostToken ? { 'x-host-token': hostToken } : {},
+    });
   } catch (err) {
     logSessionEvent('broker_revoke_failed', { uid, broker: brokerUrl, error: err.message }, 'warn');
   }

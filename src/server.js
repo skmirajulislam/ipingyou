@@ -12,6 +12,7 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
+import crypto from 'node:crypto';
 import { cleanupSessionLog, initSessionLog, logSessionEvent } from './lib/session-log.js';
 
 const app = express();
@@ -116,8 +117,31 @@ function recordViolation(req) {
 const TTL_MS = 60 * 60 * 1000; // 1 hour
 const MAX_UIDS = 50000;        // Max concurrent tunnels (prevent memory leak)
 const MAX_VIOLATIONS = 50000;  // Max tracked malicious IPs before reset
+const MAX_RESOLVES_PER_UID = 100; // Max resolves before auto-revoke (anti-scraping)
+const BROKER_SECRET = process.env.BROKER_HMAC_SECRET || crypto.randomBytes(32).toString('hex');
 
-const store = new Map(); // uid → { iv, ciphertext, salt, createdAt, clients: [], approvals: [] }
+const store = new Map(); // uid → { iv, ciphertext, salt, createdAt, clients: [], approvals: [], hostToken, resolveCount }
+
+// ─── Security Helpers ────────────────────────────────────────
+const SAFE_PARAM = /^[a-zA-Z0-9_-]{1,64}$/;
+
+function isSafeParam(val) {
+  return typeof val === 'string' && SAFE_PARAM.test(val);
+}
+
+function generateHostToken(uid) {
+  return crypto.createHmac('sha256', BROKER_SECRET).update(uid).digest('hex');
+}
+
+function requireHostToken(req, res, entry) {
+  const token = req.headers['x-host-token'];
+  if (!token || token !== entry.hostToken) {
+    recordViolation(req);
+    res.status(403).json({ error: 'Forbidden — invalid or missing host authentication token' });
+    return false;
+  }
+  return true;
+}
 
 function isEncryptedPayload(body) {
   return body
@@ -195,6 +219,9 @@ app.post('/register', strictLimiter, (req, res) => {
       return res.status(503).json({ error: 'Broker is at maximum capacity. Please try again later.' });
     }
 
+    // Generate a cryptographic host token — only the host receives this
+    const hostToken = generateHostToken(uid + Date.now().toString());
+
     // Store the encrypted blob as-is — broker NEVER decrypts
     store.set(uid, {
       iv,
@@ -204,11 +231,14 @@ app.post('/register', strictLimiter, (req, res) => {
       oneTime: Boolean(oneTime),
       createdAt: Date.now(),
       clients: [],
-      approvals: []
+      approvals: [],
+      hostToken,
+      resolveCount: 0,
     });
 
     console.log(`✅ [${new Date().toLocaleTimeString()}] Registered UID: ${uid} (encrypted, ${ciphertext.length} bytes)`);
-    res.json({ status: 'registered', uid, expiresIn: '1 hour' });
+    // Return host token — this is the ONLY time it's sent; host must store it
+    res.json({ status: 'registered', uid, hostToken, expiresIn: '1 hour' });
   } catch (err) {
     console.error('❌ Register error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -223,10 +253,14 @@ app.post('/register', strictLimiter, (req, res) => {
 app.get('/resolve/:uid', (req, res) => {
   try {
     const { uid } = req.params;
+    if (!isSafeParam(uid)) {
+      recordViolation(req);
+      return res.status(400).json({ error: 'Invalid UID format' });
+    }
+
     const entry = store.get(uid);
 
     if (!entry) {
-      // Don't strictly record a violation for one typo, but repeated 404s will be caught by rate limiter
       return res.status(404).json({ error: 'UID not found or expired' });
     }
 
@@ -236,20 +270,39 @@ app.get('/resolve/:uid', (req, res) => {
       return res.status(410).json({ error: 'UID expired' });
     }
 
+    // Enforce one-time sharing: check BEFORE sending response (prevents race condition)
+    if (entry.oneTime && entry.resolveCount > 0) {
+      store.delete(uid);
+      return res.status(410).json({ error: 'One-time session already consumed' });
+    }
+
+    // Anti-scraping: cap total resolves per UID
+    if (entry.resolveCount >= MAX_RESOLVES_PER_UID) {
+      store.delete(uid);
+      return res.status(429).json({ error: 'Resolve limit exceeded — session revoked for security' });
+    }
+
     if (entry.approvalRequired) {
       const requestId = req.query.requestId;
+      if (requestId && !isSafeParam(requestId)) {
+        recordViolation(req);
+        return res.status(400).json({ error: 'Invalid requestId format' });
+      }
       const approved = entry.approvals.find(request => request.id === requestId && request.status === 'approved');
       if (!approved) {
         return res.status(423).json({ error: 'Host approval required before resolving this session' });
       }
     }
 
-    console.log(`🔍 [${new Date().toLocaleTimeString()}] Resolved UID: ${uid} (returning encrypted blob)`);
+    // Increment resolve counter atomically BEFORE sending response
+    entry.resolveCount = (entry.resolveCount || 0) + 1;
+
+    console.log(`🔍 [${new Date().toLocaleTimeString()}] Resolved UID: ${uid} (resolve #${entry.resolveCount})`);
 
     // Return encrypted blob — client decrypts
     res.json({ uid, iv: entry.iv, ciphertext: entry.ciphertext, salt: entry.salt });
 
-    // Enforce one-time sharing: auto-delete UID after first successful resolve
+    // Enforce one-time sharing: auto-delete AFTER response sent
     if (entry.oneTime) {
       store.delete(uid);
       console.log(`🔒 [${new Date().toLocaleTimeString()}] One-time UID ${uid} auto-revoked after first resolve`);
@@ -267,11 +320,19 @@ app.get('/resolve/:uid', (req, res) => {
 app.post('/approval-request/:uid', generalLimiter, (req, res) => {
   try {
     const { uid } = req.params;
+    if (!isSafeParam(uid)) {
+      recordViolation(req);
+      return res.status(400).json({ error: 'Invalid UID format' });
+    }
     const entry = store.get(uid);
     if (!entry) return res.status(404).json({ error: 'UID not found' });
-    if (!isEncryptedPayload(req.body)) return res.status(400).json({ error: 'Invalid encrypted approval payload' });
+    if (!isEncryptedPayload(req.body)) {
+      recordViolation(req);
+      return res.status(400).json({ error: 'Invalid encrypted approval payload' });
+    }
 
-    const id = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    // Generate cryptographically secure request ID
+    const id = crypto.randomBytes(12).toString('hex');
     const request = {
       id,
       iv: req.body.iv,
@@ -290,29 +351,49 @@ app.post('/approval-request/:uid', generalLimiter, (req, res) => {
   }
 });
 
+// HOST-ONLY: List approval requests (requires host token)
 app.get('/approval-requests/:uid', generalLimiter, (req, res) => {
+  if (!isSafeParam(req.params.uid)) return res.status(400).json({ error: 'Invalid UID' });
   const entry = store.get(req.params.uid);
   if (!entry) return res.status(404).json({ error: 'UID not found' });
-  res.json({ approvalRequired: entry.approvalRequired, approvals: entry.approvals });
+  // Require host token to view approval list
+  if (!requireHostToken(req, res, entry)) return;
+  // Strip encrypted payloads — host dashboard only needs id/status/timestamps
+  const sanitized = entry.approvals.map(a => ({ id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt }));
+  res.json({ approvalRequired: entry.approvalRequired, approvals: sanitized });
 });
 
-app.post('/approval-requests/:uid/:requestId/:decision', generalLimiter, (req, res) => {
+// HOST-ONLY: Decide on an approval request (requires host token)
+app.post('/approval-requests/:uid/:requestId/:decision', strictLimiter, (req, res) => {
+  if (!isSafeParam(req.params.uid) || !isSafeParam(req.params.requestId)) {
+    recordViolation(req);
+    return res.status(400).json({ error: 'Invalid parameter format' });
+  }
   const entry = store.get(req.params.uid);
   if (!entry) return res.status(404).json({ error: 'UID not found' });
+  // CRITICAL: Only the host can approve/deny requests
+  if (!requireHostToken(req, res, entry)) return;
   const request = entry.approvals.find(item => item.id === req.params.requestId);
   if (!request) return res.status(404).json({ error: 'Request not found' });
   if (!['approved', 'denied'].includes(req.params.decision)) return res.status(400).json({ error: 'Invalid decision' });
+  // Prevent re-deciding already decided requests
+  if (request.status !== 'pending') return res.status(409).json({ error: 'Request already decided' });
 
   request.status = req.params.decision;
   request.decidedAt = Date.now();
   res.json({ status: request.status });
 });
 
+// CLIENT: Check own approval status (requires valid requestId — unguessable 24-char hex)
 app.get('/approval-status/:uid/:requestId', generalLimiter, (req, res) => {
+  if (!isSafeParam(req.params.uid) || !isSafeParam(req.params.requestId)) {
+    return res.status(400).json({ error: 'Invalid parameter format' });
+  }
   const entry = store.get(req.params.uid);
   if (!entry) return res.status(404).json({ error: 'UID not found' });
   const request = entry.approvals.find(item => item.id === req.params.requestId);
   if (!request) return res.status(404).json({ error: 'Request not found' });
+  // Only return status — never leak encrypted approval data
   res.json({ status: request.status });
 });
 
@@ -323,13 +404,18 @@ app.get('/approval-status/:uid/:requestId', generalLimiter, (req, res) => {
 app.post('/client-info/:uid', generalLimiter, (req, res) => {
   try {
     const { uid } = req.params;
-    const { iv, ciphertext, salt } = req.body;
-    
+    if (!isSafeParam(uid)) {
+      recordViolation(req);
+      return res.status(400).json({ error: 'Invalid UID format' });
+    }
     const entry = store.get(uid);
     if (!entry) return res.status(404).json({ error: 'UID not found' });
-    if (!iv || !ciphertext || !salt) return res.status(400).json({ error: 'Missing encrypted telemetry payload' });
+    if (!isEncryptedPayload(req.body)) {
+      recordViolation(req);
+      return res.status(400).json({ error: 'Invalid encrypted telemetry payload' });
+    }
 
-    entry.clients.push({ iv, ciphertext, salt, seenAt: Date.now() });
+    entry.clients.push({ iv: req.body.iv, ciphertext: req.body.ciphertext, salt: req.body.salt, seenAt: Date.now() });
     
     // Keep max 50 recent client pings to prevent memory leaks
     if (entry.clients.length > 50) entry.clients.shift();
@@ -344,12 +430,14 @@ app.post('/client-info/:uid', generalLimiter, (req, res) => {
  * GET /clients/:uid
  * Host retrieves all securely encrypted client telemetry blobs.
  */
+// HOST-ONLY: View client telemetry (requires host token)
 app.get('/clients/:uid', generalLimiter, (req, res) => {
   try {
     const { uid } = req.params;
+    if (!isSafeParam(uid)) return res.status(400).json({ error: 'Invalid UID format' });
     const entry = store.get(uid);
-    
     if (!entry) return res.status(404).json({ error: 'UID not found' });
+    if (!requireHostToken(req, res, entry)) return;
 
     res.json({ clients: entry.clients });
   } catch (err) {
@@ -361,11 +449,19 @@ app.get('/clients/:uid', generalLimiter, (req, res) => {
  * DELETE /revoke/:uid
  * Allows host to explicitly remove their UID before expiry.
  */
+// HOST-ONLY: Revoke a session (requires host token)
 app.delete('/revoke/:uid', strictLimiter, (req, res) => {
   const { uid } = req.params;
-  const existed = store.delete(uid);
-  console.log(`🚫 [${new Date().toLocaleTimeString()}] Revoked UID: ${uid} (existed: ${existed})`);
-  res.json({ status: existed ? 'revoked' : 'not_found' });
+  if (!isSafeParam(uid)) {
+    recordViolation(req);
+    return res.status(400).json({ error: 'Invalid UID format' });
+  }
+  const entry = store.get(uid);
+  if (!entry) return res.json({ status: 'not_found' });
+  if (!requireHostToken(req, res, entry)) return;
+  store.delete(uid);
+  console.log(`🚫 [${new Date().toLocaleTimeString()}] Revoked UID: ${uid} (authenticated)`);
+  res.json({ status: 'revoked' });
 });
 
 // ─── Global Error Handler ────────────────────────────────────

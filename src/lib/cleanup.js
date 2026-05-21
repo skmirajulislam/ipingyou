@@ -24,6 +24,9 @@ let _revokeUID = null;
 /** @type {string|null} — Broker URL for revocation */
 let _brokerUrl = null;
 
+/** @type {(() => string|null)|null} — Getter for host auth token */
+let _getHostToken = null;
+
 /** @type {Array<() => Promise<void>|void>} — Custom cleanup hooks */
 const _cleanupHooks = [];
 let cleanedUp = false;
@@ -56,10 +59,12 @@ export function untrackPID(pid) {
  * Set UID + broker URL for automatic revocation on shutdown.
  * @param {string} uid
  * @param {string} brokerUrl
+ * @param {() => string|null} [getHostToken]
  */
-export function setRevokeOnExit(uid, brokerUrl) {
+export function setRevokeOnExit(uid, brokerUrl, getHostToken = null) {
   _revokeUID = uid;
   _brokerUrl = brokerUrl;
+  _getHostToken = getHostToken;
 }
 
 /**
@@ -110,7 +115,14 @@ export async function cleanupAll() {
   // Revoke UID from broker
   if (_revokeUID && _brokerUrl) {
     try {
-      const res = await fetch(`${_brokerUrl}/revoke/${_revokeUID}`, { method: 'DELETE' });
+      const headers = {};
+      const token = _getHostToken ? _getHostToken() : null;
+      if (token) headers['x-host-token'] = token;
+      
+      const res = await fetch(`${_brokerUrl}/revoke/${_revokeUID}`, { 
+        method: 'DELETE',
+        headers 
+      });
       if (res.ok) {
         console.log(chalk.dim(`     Revoked UID ${_revokeUID} from broker`));
       }
