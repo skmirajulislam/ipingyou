@@ -624,7 +624,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
       switch (action) {
         case 'approvals': {
           try {
-            const data = await fetchApprovalRequests(BROKER_URL, uid);
+            const data = await fetchApprovalRequests(BROKER_URL, uid, hostToken);
             const pending = (data.approvals || []).filter(item => item.status === 'pending');
             if (pending.length === 0) {
               console.log(chalk.yellow('  No pending approval requests.'));
@@ -656,7 +656,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
                 ],
               }]);
               if (decision !== 'skip') {
-                await decideApprovalRequest(BROKER_URL, uid, request.id, decision);
+                await decideApprovalRequest(BROKER_URL, uid, request.id, decision, hostToken);
                 recordEvent('approval_decision', { uid, requestId: request.id, decision, username: details.username });
               }
             }
@@ -747,7 +747,9 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         case 'show': {
           const spinner = createSpinner('Fetching secure client telemetry...', networkSpinner).start();
           try {
-            const res = await fetch(`${BROKER_URL}/clients/${uid}`);
+            const res = await fetch(`${BROKER_URL}/clients/${uid}`, {
+              headers: hostToken ? { 'x-host-token': hostToken } : {}
+            });
             if (!res.ok) throw new Error('Failed to fetch from broker');
             const data = await res.json();
 
