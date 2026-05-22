@@ -109,11 +109,11 @@ export async function promptLocalPath(label, browserStart = process.cwd()) {
   return expandLocalPath(localPath);
 }
 
-async function listRemoteDirectory(username, hostname, privateKeyPath, remoteDir) {
+async function listRemoteDirectory(username, hostname, privateKeyPath, remoteDir, persistKnownHosts = true) {
   const cdTarget = formatRemoteCd(remoteDir);
   const cdCommand = cdTarget ? `cd ${cdTarget}` : 'cd';
   const command = `${cdCommand} && printf '__SECURELINK_PWD__%s\\n' "$PWD" && ls -1Ap`;
-  const sshArgs = buildSshArgs(hostname, privateKeyPath);
+  const sshArgs = buildSshArgs(hostname, privateKeyPath, [], { persistKnownHosts });
   sshArgs.push(`${username}@${hostname}`, command);
 
   const result = await execa('ssh', sshArgs, {
@@ -146,7 +146,8 @@ async function listRemoteDirectory(username, hostname, privateKeyPath, remoteDir
   return { pwd, entries };
 }
 
-export async function promptRemotePath(username, hostname, privateKeyPath, purpose, startDir = '~') {
+export async function promptRemotePath(username, hostname, privateKeyPath, purpose, startDir = '~', options = {}) {
+  const { persistKnownHosts = true } = options;
   const browseLabel = purpose === 'source'
     ? 'Browse host files interactively'
     : 'Browse host folders interactively';
@@ -183,7 +184,7 @@ export async function promptRemotePath(username, hostname, privateKeyPath, purpo
   while (true) {
     let listing;
     try {
-      listing = await listRemoteDirectory(username, hostname, privateKeyPath, currentDir);
+      listing = await listRemoteDirectory(username, hostname, privateKeyPath, currentDir, persistKnownHosts);
     } catch (err) {
       console.log(chalk.yellow(`  ⚠️  Could not browse host files: ${err.message}`));
       if (/Operation not permitted/i.test(err.stderr || err.message)) {

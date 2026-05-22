@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url';
 
 import { detectOS, checkDependencies } from './lib/platform.js';
 import { cleanupAll, installShutdownHandlers, executePanicMode } from './lib/cleanup.js';
+import { cleanupSessionLog } from './lib/session-log.js';
 import { startHostMode } from './modes/host.js';
 import { startClientMode } from './modes/client.js';
 import { startAIMode } from './modes/ai.js';
@@ -163,6 +164,7 @@ function fatal(context, err) {
     stackLines.forEach(line => console.error(chalk.dim(`     ${line.trim()}`)));
   }
   console.error('');
+  cleanupSessionLog();
   cleanupAll().finally(() => process.exit(1));
 }
 

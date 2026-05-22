@@ -68,7 +68,7 @@ app.use((req, res, next) => {
 // Trust proxy is required if the server is behind a reverse proxy (like Render, Heroku, Cloudflare)
 app.set('trust proxy', 1);
 
-// General rate limiter for all requests (100 reqs per 15 minutes per IP)
+// General rate limiter for public requests (100 reqs per 15 minutes per IP)
 const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -76,13 +76,21 @@ const generalLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use(generalLimiter);
 
 // Stricter rate limiter for registration/revocation endpoints (e.g. 20 reqs per 15 mins)
 const strictLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: { error: 'Too many registration/revocation requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Higher limiter for host-authenticated endpoints (dashboard polling, approvals, telemetry views)
+const hostLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600,
+  message: { error: 'Too many host requests. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -173,7 +181,7 @@ setInterval(pruneExpired, 5 * 60 * 1000);
 // ─── Routes ──────────────────────────────────────────────────
 
 // Health
-app.get('/health', (_req, res) => {
+app.get('/health', generalLimiter, (_req, res) => {
   res.json({ status: 'ok', uptime: process.uptime(), activeUIDs: store.size });
 });
 
@@ -253,7 +261,7 @@ app.post('/register', strictLimiter, (req, res) => {
  * Returns the ENCRYPTED blob { iv, ciphertext } for a given UID.
  * The client CLI decrypts it locally — the broker never sees plaintext.
  */
-app.get('/resolve/:uid', (req, res) => {
+app.get('/resolve/:uid', generalLimiter, (req, res) => {
   try {
     const { uid } = req.params;
     if (!isSafeParam(uid)) {
@@ -355,7 +363,7 @@ app.post('/approval-request/:uid', generalLimiter, (req, res) => {
 });
 
 // HOST-ONLY: List approval requests (requires host token)
-app.get('/approval-requests/:uid', generalLimiter, (req, res) => {
+app.get('/approval-requests/:uid', hostLimiter, (req, res) => {
   if (!isSafeParam(req.params.uid)) return res.status(400).json({ error: 'Invalid UID' });
   const entry = store.get(req.params.uid);
   if (!entry) return res.status(404).json({ error: 'UID not found' });
@@ -434,7 +442,7 @@ app.post('/client-info/:uid', generalLimiter, (req, res) => {
  * Host retrieves all securely encrypted client telemetry blobs.
  */
 // HOST-ONLY: View client telemetry (requires host token)
-app.get('/clients/:uid', generalLimiter, (req, res) => {
+app.get('/clients/:uid', hostLimiter, (req, res) => {
   try {
     const { uid } = req.params;
     if (!isSafeParam(uid)) return res.status(400).json({ error: 'Invalid UID format' });

@@ -29,6 +29,7 @@ import { startChatServer, openLocalChatUI } from '../lib/chat.js';
 import { spawnTunnelSupervised } from '../lib/tunnel.js';
 import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID } from '../lib/broker.js';
 import { cleanupSessionLog, getSessionLogPath, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
+import { TMUX_SESSION_NAME, tmuxSocketArgs } from '../lib/tmux.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -274,10 +275,35 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
       } catch { }
     };
 
-    const iv = setInterval(push, 3000);
+    const iv = setInterval(push, 5000);
     req.on('close', () => { clearInterval(iv); closed = true; });
     // send initial payload
     await push();
+  });
+
+  app.get('/api/clients', async (_req, res) => {
+    try {
+      const brokerRes = await fetch(`${BROKER_URL}/clients/${uid}`, {
+        headers: sessionState.hostToken ? { 'x-host-token': sessionState.hostToken } : {}
+      });
+      if (!brokerRes.ok) {
+        const data = await brokerRes.json().catch(() => ({}));
+        return res.status(brokerRes.status).json({ error: data.error || 'Failed to fetch clients' });
+      }
+      const data = await brokerRes.json();
+      const clients = (data.clients || []).map((clientBlob) => {
+        try {
+          const decrypted = decrypt(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
+          const t = JSON.parse(decrypted);
+          return { ...t, seenAt: clientBlob.seenAt || null };
+        } catch {
+          return { error: 'decrypt_failed', seenAt: clientBlob.seenAt || null };
+        }
+      });
+      res.json({ clients });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // CSRF Protection Middleware for all mutating endpoints
@@ -404,6 +430,16 @@ function showToast(msg) {
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2500);
 }
+ 
+function escapeHtml(value) {
+ return String(value || '').replace(/[&<>"']/g, (m) => ({
+   '&': '&amp;',
+   '<': '&lt;',
+   '>': '&gt;',
+   '"': '&quot;',
+   "'": '&#39;',
+ })[m]);
+}
 
 function updateUptime() {
   const diff = Math.floor((Date.now() - startedAt.getTime()) / 1000);
@@ -490,14 +526,47 @@ async function revokeSession() {
 // Poll client telemetry (separate from SSE for simplicity)
 async function pollClients() {
   try {
-    const res = await fetch('/api/status');
+    const res = await fetch('/api/clients');
     if (!res.ok) return;
-    // Client data is fetched from broker by SSE push. Let's also add a client endpoint.
+    const data = await res.json();
+    renderClients(data.clients || []);
   } catch {}
 }
+ 
+function renderClients(clients) {
+  const container = document.getElementById('clients');
+  if (!clients || clients.length === 0) {
+    container.innerHTML = '<p class="empty">No clients connected yet</p>';
+    document.getElementById('client-count').textContent = '';
+    return;
+  }
+ 
+  document.getElementById('client-count').textContent = '(' + clients.length + ' connected)';
+  let html = '';
+  clients.forEach((c, idx) => {
+    if (c.error) {
+      html += '<div class="client-card"><strong>Client #' + (idx + 1) + '</strong> — payload decryption failed</div>';
+      return;
+    }
+    const when = c.time || (c.seenAt ? new Date(c.seenAt).toLocaleTimeString() : 'Unknown');
+    html += '<div class="client-card">'
+      + '<strong>' + escapeHtml(c.username || 'Unknown') + '</strong>'
+      + ' — ' + escapeHtml(c.action || 'connected') + '<br>'
+      + '<span class="meta">IP: ' + escapeHtml(c.ip || 'Unknown') + '</span><br>'
+      + '<span class="meta">OS: ' + escapeHtml(c.os || 'Unknown') + '</span><br>'
+      + '<span class="meta">CPU: ' + escapeHtml(c.cpu || 'Unknown') + '</span><br>'
+      + '<span class="meta">RAM: ' + escapeHtml(c.ram || 'Unknown') + '</span><br>'
+      + '<span class="meta">Time: ' + escapeHtml(when) + '</span>'
+      + '</div>';
+  });
+  container.innerHTML = html;
+}
+ 
+setInterval(pollClients, 5000);
+pollClients();
 </script>
 </body></html>`);
-  });
+ });
 
   return new Promise((resolve) => {
     const server = app.listen(0, '127.0.0.1', async () => {
@@ -742,7 +811,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
           try {
             await execaCommand('tmux -V', { reject: true });
-            const sessionCheck = await execa('tmux', ['has-session', '-t', 'SecureLink_Session'], { reject: false });
+            const sessionCheck = await execa('tmux', [...tmuxSocketArgs(), 'has-session', '-t', TMUX_SESSION_NAME], { reject: false });
             if (sessionCheck.exitCode !== 0) {
               console.log(chalk.yellow('  ⚠️  No mirrored terminal session is active yet.'));
               console.log(chalk.dim('     A client must choose "Connect via SSH" first. SCP-only clients do not create a tmux session.'));
@@ -750,7 +819,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               logSessionEvent('host_mirror_missing_session', {}, 'warn');
               return waitForAction();
             }
-            await execaCommand('tmux attach -t SecureLink_Session -r', { stdio: 'inherit' });
+            await execa('tmux', [...tmuxSocketArgs(), 'attach', '-t', TMUX_SESSION_NAME, '-r'], { stdio: 'inherit', reject: false });
             logSessionEvent('host_mirror_attached');
           } catch (err) {
             console.log(chalk.yellow('  ⚠️  Could not attach to tmux.'));
@@ -815,7 +884,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               await execaCommand('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name = \'sshd.exe\'\\" | Where-Object { $_.CommandLine -match \'sshd:.*@\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"', { reject: false });
             } else {
               await execaCommand("pkill -f 'sshd:.*@'", { shell: true, reject: false });
-              await execaCommand('tmux kill-session -t SecureLink_Session', { reject: false });
+              await execa('tmux', [...tmuxSocketArgs(), 'kill-session', '-t', TMUX_SESSION_NAME], { reject: false });
             }
             spinner.succeed('All client SSH sessions terminated');
             logSessionEvent('host_sessions_terminated');

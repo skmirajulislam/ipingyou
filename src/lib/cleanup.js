@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execaCommand } from 'execa';
+import { TMUX_SESSION_NAME, tmuxSocketArgs } from './tmux.js';
 
 /** @type {Set<number>} — Active child PIDs we manage */
 const trackedPIDs = new Set();
@@ -191,7 +192,7 @@ export async function executePanicMode() {
     } else {
       await execaCommand('pkill -9 -f cloudflared', { reject: false });
       await execaCommand('pkill -9 -f "sshd:.*@"', { reject: false });
-      await execaCommand('tmux kill-session -t SecureLink_Session', { reject: false });
+      await execaCommand(`tmux ${tmuxSocketArgs().join(' ')} kill-session -t ${TMUX_SESSION_NAME}`, { reject: false });
     }
   } catch {}
 
