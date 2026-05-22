@@ -67,7 +67,7 @@ The public broker server exists solely to rendezvous connections and approvals. 
 ```mermaid
 graph LR
     H[Host CLI] -->|AES-256-CBC Encrypted Session Payload| B((Broker Relay))
-    H -->|Host Auth Token (approvals/telemetry)| B
+    H -->|Host Auth Token for approvals and telemetry| B
     B -->|Encrypted Session Payload| C[Client CLI]
     C -->|Locally Decrypts Password| C
     C -->|Direct Cloudflare SSH/TCP| H
@@ -87,9 +87,9 @@ sequenceDiagram
     participant C as Client CLI
     participant B as Broker Relay
     participant H as Host CLI
-    C->>B: approval-request (encrypted metadata)
-    H->>B: fetch approvals (x-host-token)
-    H->>B: approve/deny (x-host-token)
+    C->>B: approval-request encrypted metadata
+    H->>B: fetch approvals with x-host-token
+    H->>B: approve/deny with x-host-token
     C->>B: poll approval status
     B-->>C: approved/denied
 ```
