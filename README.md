@@ -60,22 +60,43 @@ securelink
 
 ## 🔒 Zero-Knowledge Architecture
 
-The public broker server exists solely to rendezvous connections. It is fundamentally a **"Dumb Pipe"**.
+The public broker server exists solely to rendezvous connections and approvals. It is fundamentally a **"Dumb Pipe"**.
+
+### Session Bootstrap & Data Path
 
 ```mermaid
 graph LR
-    H[Host CLI] -->|AES-256-CBC Encrypted Payload| B((Broker Relay))
-    B -->|Encrypted Payload| C[Client CLI]
+    H[Host CLI] -->|AES-256-CBC Encrypted Session Payload| B((Broker Relay))
+    H -->|Host Auth Token (approvals/telemetry)| B
+    B -->|Encrypted Session Payload| C[Client CLI]
     C -->|Locally Decrypts Password| C
-    C -->|Direct Cloudflare SSH| H
+    C -->|Direct Cloudflare SSH/TCP| H
     C -->|E2E AES-GCM WebSockets| H
 ```
 
-1. **Host** starts up, spawns `cloudflared` tunnels for SSH and Chat, and generates a random, offline **AES-256 Session Password**.
-2. **Host** encrypts the tunnel data with the password and sends the *ciphertext* to the Broker alongside a short UID.
+1. **Host** starts up, spawns `cloudflared` tunnels for SSH/HTTP/TCP and Chat, then generates a random **AES-256 Session Password** plus a **host-only auth token**.
+2. **Host** encrypts the session payload with the password and registers the ciphertext (plus the host token) with the Broker under a short UID.
 3. **Client** runs `ipingyou connect`, enters the UID and Password.
-4. **Client** fetches the ciphertext, decrypts it locally, and connects directly via SSH and WebSockets.
-5. On `Ctrl+C`, `tree-kill` initiates a graceful shutdown, revokes the UID from the broker, and scrubs `/tmp` memory.
+4. **Client** fetches the ciphertext, decrypts it locally, and connects directly via SSH or WebSockets.
+5. On `Ctrl+C`, `tree-kill` initiates a graceful shutdown, revokes the UID from the broker, and removes session artifacts.
+
+### Approval Gate Flow (Optional)
+
+```mermaid
+sequenceDiagram
+    participant C as Client CLI
+    participant B as Broker Relay
+    participant H as Host CLI
+    C->>B: approval-request (encrypted metadata)
+    H->>B: fetch approvals (x-host-token)
+    H->>B: approve/deny (x-host-token)
+    C->>B: poll approval status
+    B-->>C: approved/denied
+```
+
+1. **Client** submits encrypted approval metadata (username, host, intent) to the Broker.
+2. **Host** lists and decides approvals using its host-only auth token; the Broker never shares this token with clients.
+3. **Client** polls for approval status and proceeds only when approved.
 
 ---
 
@@ -111,6 +132,8 @@ These alerts (e.g., "AI-detected potential code anomaly", "Shell access", "Netwo
 | `ipingyou service install` | 👻 Installs Host mode as an always-on background daemon. |
 | `ipingyou service stop` | Stops and removes the background daemon. |
 | `ipingyou service status` | Shows background daemon status. |
+| `ipingyou allowlist` | Manage the AI command allowlist (list/add/remove). |
+| `ipingyou history` | View session event logs from `~/.ipingyou/logs`. |
 
 ---
 

@@ -122,6 +122,8 @@ function showRichHelp() {
   console.log(`    • Cloudflare Tunnels punch through NAT/Firewalls securely.`);
   console.log(`    • ${chalk.green('End-to-End Encryption')}: Tunnel URLs are AES-256 encrypted locally.`);
   console.log(`    • The Broker never sees your plaintext URL, only ciphertext.`);
+  console.log(`    • ${chalk.green('Host Auth Token')}: Host-only token gates approvals & telemetry access.`);
+  console.log(`    • ${chalk.green('Approval Gate')}: Clients submit encrypted metadata; Host approves/denies.`);
   console.log('');
 
   console.log(chalk.bold.white('  🔥 Advanced Features:'));
@@ -130,6 +132,8 @@ function showRichHelp() {
   console.log(`    • ${chalk.green('E2E Chat Room')}      : Real-time Web Crypto AES-GCM secure chat UI for Host & Clients.`);
   console.log(`    • ${chalk.green('Daemonization')}      : Run Host mode as a background service via PM2.`);
   console.log(`    • ${chalk.green('Panic Kill-Switch')}  : Instantly purge all processes, configurations, and traces.`);
+  console.log(`    • ${chalk.green('Shared Drop Folder')} : Session dropbox auto-removed on exit.`);
+  console.log(`    • ${chalk.green('Live Session Logs')}  : Host/client/broker events written per session.`);
   console.log('');
 
   console.log(chalk.bold.white('  💡 Examples:'));
