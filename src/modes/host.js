@@ -193,6 +193,23 @@ async function prepareSharedDropFolder(uid) {
   return dropPath;
 }
 
+async function cleanupSharedDropFolder(dropPath, uid) {
+  if (!dropPath) return;
+  const expectedPath = path.join(os.homedir(), `ipingyou-dropbox-${uid}`);
+  if (path.resolve(dropPath) !== path.resolve(expectedPath)) {
+    console.log(chalk.yellow('     Skipping drop folder cleanup (unexpected path).'));
+    return;
+  }
+  try {
+    const stat = await fs.promises.lstat(dropPath).catch(() => null);
+    if (!stat || !stat.isDirectory() || stat.isSymbolicLink()) return;
+    console.log(chalk.dim('     Removing shared drop folder...'));
+    await fs.promises.rm(dropPath, { recursive: true, force: true });
+  } catch (err) {
+    console.log(chalk.yellow(`     Could not remove drop folder: ${err.message}`));
+  }
+}
+
 function showMacPrivacyPreflight(sharedDropPath) {
   if (process.platform !== 'darwin') return;
 
@@ -953,6 +970,7 @@ export async function startHostMode() {
       serviceConfig.sharedDropPath = await prepareSharedDropFolder(uid);
       console.log(chalk.green(`  ✓ Shared drop folder ready: ${serviceConfig.sharedDropPath}`));
       showMacPrivacyPreflight(serviceConfig.sharedDropPath);
+      addCleanupHook(() => cleanupSharedDropFolder(serviceConfig.sharedDropPath, uid));
     } catch (err) {
       console.log(chalk.yellow(`  ⚠️  Could not prepare shared drop folder: ${err.message}`));
     }

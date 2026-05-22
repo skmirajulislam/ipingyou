@@ -25,7 +25,7 @@ No firewalls to configure. No port forwarding. No plaintext leakage.
 * 🧭 **Approval Gate**: Require the Host to explicitly approve clients before they receive tunnel/key material.
 * 📦 **One-Time File Share**: Serve a single file/folder over SCP and revoke after use.
 * 🌐 **HTTP & TCP Exposure**: Share a local web app or any TCP service (DB/RDP/VNC) beyond SSH.
-* 📂 **Shared Drop Folder**: Auto-prepared dropbox folder for safe file transfers (macOS friendly).
+* 📂 **Shared Drop Folder**: Auto-prepared dropbox folder for safe file transfers (macOS friendly), removed on exit.
 * 🧾 **Live Session Logs**: Host/client/broker write ephemeral per-session logs with actions and request/response status, removed on exit.
 
 ---
