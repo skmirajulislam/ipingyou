@@ -139,42 +139,42 @@ async function ensureTmuxInstalled() {
           throw new Error('Homebrew is required to install tmux on macOS');
         }
       }
-
-      function isSecureLinkSession(name) {
-        return name === TMUX_SESSION_NAME || name.startsWith(TMUX_SESSION_PREFIX);
-      }
-
-      async function listTmuxSessions(socketArgs = []) {
-        const result = await execa('tmux', [...socketArgs, 'list-sessions', '-F', '#{session_name}|#{session_created}'], { reject: false });
-        if (result.exitCode !== 0) return [];
-        return result.stdout
-          .split(/\r?\n/)
-          .filter(Boolean)
-          .map(line => {
-            const [name, createdAt] = line.split('|');
-            return { name, createdAt: Number(createdAt) || null };
-          });
-      }
-
-      async function getMirrorableSessions() {
-        const sessions = [];
-        const customSessions = await listTmuxSessions(tmuxSocketArgs());
-        customSessions
-          .filter(s => isSecureLinkSession(s.name))
-          .forEach(s => sessions.push({ ...s, socketArgs: tmuxSocketArgs(), source: 'custom' }));
-
-        const legacySessions = await listTmuxSessions();
-        legacySessions
-          .filter(s => isSecureLinkSession(s.name))
-          .forEach(s => sessions.push({ ...s, socketArgs: [], source: 'legacy' }));
-
-        return sessions;
-      }
     }
   } catch (err) {
     spinner.fail(`tmux check/install failed: ${err.message}`);
     console.log(chalk.dim('  Terminal Mirroring feature will not be available.'));
   }
+}
+
+function isSecureLinkSession(name) {
+  return name === TMUX_SESSION_NAME || name.startsWith(TMUX_SESSION_PREFIX);
+}
+
+async function listTmuxSessions(socketArgs = []) {
+  const result = await execa('tmux', [...socketArgs, 'list-sessions', '-F', '#{session_name}|#{session_created}'], { reject: false });
+  if (result.exitCode !== 0) return [];
+  return result.stdout
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map(line => {
+      const [name, createdAt] = line.split('|');
+      return { name, createdAt: Number(createdAt) || null };
+    });
+}
+
+async function getMirrorableSessions() {
+  const sessions = [];
+  const customSessions = await listTmuxSessions(tmuxSocketArgs());
+  customSessions
+    .filter(s => isSecureLinkSession(s.name))
+    .forEach(s => sessions.push({ ...s, socketArgs: tmuxSocketArgs(), source: 'custom' }));
+
+  const legacySessions = await listTmuxSessions();
+  legacySessions
+    .filter(s => isSecureLinkSession(s.name))
+    .forEach(s => sessions.push({ ...s, socketArgs: [], source: 'legacy' }));
+
+  return sessions;
 }
 
 // ─── Ephemeral SSH Key Management ────────────────────────────

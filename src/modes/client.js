@@ -91,7 +91,8 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
     const tmuxSession = buildTmuxSessionName(username);
     const tmuxPrepare = `${tmuxSocketCommand()} has-session -t ${tmuxSession} 2>/dev/null || ${tmuxSocketCommand()} new-session -d -s ${tmuxSession}`;
     const tmuxAttach = `${tmuxSocketCommand()} attach -t ${tmuxSession}`;
-    sshArgs.push('-t', `${tmuxPrepare} && ${tmuxAttach} || exec $SHELL -l`);
+    const tmuxCommand = `if command -v tmux >/dev/null 2>&1; then (${tmuxPrepare} && ${tmuxAttach}) || exec $SHELL -l; else exec $SHELL -l; fi`;
+    sshArgs.push('-t', tmuxCommand);
 
     const child = execa('ssh', sshArgs, {
       stdio: 'inherit',
