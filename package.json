@@ -55,7 +55,7 @@
     "ws": "^8.20.1",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
-    "helmet": "^7.1.0"
+    "helmet": "^8.2.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.4"
