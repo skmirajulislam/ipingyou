@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execaCommand } from 'execa';
-import { TMUX_SESSION_NAME, tmuxSocketArgs } from './tmux.js';
+import { TMUX_SESSION_NAME, TMUX_SESSION_PREFIX, tmuxSocketArgs } from './tmux.js';
 
 /** @type {Set<number>} — Active child PIDs we manage */
 const trackedPIDs = new Set();
@@ -192,7 +192,15 @@ export async function executePanicMode() {
     } else {
       await execaCommand('pkill -9 -f cloudflared', { reject: false });
       await execaCommand('pkill -9 -f "sshd:.*@"', { reject: false });
-      await execaCommand(`tmux ${tmuxSocketArgs().join(' ')} kill-session -t ${TMUX_SESSION_NAME}`, { reject: false });
+      await execaCommand(`tmux ${tmuxSocketArgs().join(' ')} kill-server`, { reject: false });
+      const { stdout } = await execaCommand('tmux list-sessions -F "#{session_name}"', { reject: false });
+      const legacyNames = stdout
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .filter(name => name === TMUX_SESSION_NAME || name.startsWith(TMUX_SESSION_PREFIX));
+      for (const name of legacyNames) {
+        await execaCommand(`tmux kill-session -t ${name}`, { reject: false });
+      }
     }
   } catch {}
 

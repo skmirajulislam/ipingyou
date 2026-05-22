@@ -29,7 +29,7 @@ import { startChatServer, openLocalChatUI } from '../lib/chat.js';
 import { spawnTunnelSupervised } from '../lib/tunnel.js';
 import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID } from '../lib/broker.js';
 import { cleanupSessionLog, getSessionLogPath, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
-import { TMUX_SESSION_NAME, tmuxSocketArgs } from '../lib/tmux.js';
+import { TMUX_SESSION_NAME, TMUX_SESSION_PREFIX, tmuxSocketArgs } from '../lib/tmux.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -138,6 +138,37 @@ async function ensureTmuxInstalled() {
         } catch {
           throw new Error('Homebrew is required to install tmux on macOS');
         }
+      }
+
+      function isSecureLinkSession(name) {
+        return name === TMUX_SESSION_NAME || name.startsWith(TMUX_SESSION_PREFIX);
+      }
+
+      async function listTmuxSessions(socketArgs = []) {
+        const result = await execa('tmux', [...socketArgs, 'list-sessions', '-F', '#{session_name}|#{session_created}'], { reject: false });
+        if (result.exitCode !== 0) return [];
+        return result.stdout
+          .split(/\r?\n/)
+          .filter(Boolean)
+          .map(line => {
+            const [name, createdAt] = line.split('|');
+            return { name, createdAt: Number(createdAt) || null };
+          });
+      }
+
+      async function getMirrorableSessions() {
+        const sessions = [];
+        const customSessions = await listTmuxSessions(tmuxSocketArgs());
+        customSessions
+          .filter(s => isSecureLinkSession(s.name))
+          .forEach(s => sessions.push({ ...s, socketArgs: tmuxSocketArgs(), source: 'custom' }));
+
+        const legacySessions = await listTmuxSessions();
+        legacySessions
+          .filter(s => isSecureLinkSession(s.name))
+          .forEach(s => sessions.push({ ...s, socketArgs: [], source: 'legacy' }));
+
+        return sessions;
       }
     }
   } catch (err) {
@@ -811,16 +842,32 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
           try {
             await execaCommand('tmux -V', { reject: true });
-            const sessionCheck = await execa('tmux', [...tmuxSocketArgs(), 'has-session', '-t', TMUX_SESSION_NAME], { reject: false });
-            if (sessionCheck.exitCode !== 0) {
+            const sessions = await getMirrorableSessions();
+            if (sessions.length === 0) {
               console.log(chalk.yellow('  ⚠️  No mirrored terminal session is active yet.'));
               console.log(chalk.dim('     A client must choose "Connect via SSH" first. SCP-only clients do not create a tmux session.'));
               console.log(chalk.dim('     tmux is needed on the host machine only; the client does not need tmux.'));
               logSessionEvent('host_mirror_missing_session', {}, 'warn');
               return waitForAction();
             }
-            await execa('tmux', [...tmuxSocketArgs(), 'attach', '-t', TMUX_SESSION_NAME, '-r'], { stdio: 'inherit', reject: false });
-            logSessionEvent('host_mirror_attached');
+
+            let target = sessions[0];
+            if (sessions.length > 1) {
+              const { sessionChoice } = await inquirer.prompt([{
+                type: 'list',
+                name: 'sessionChoice',
+                message: 'Select an active client session to mirror:',
+                choices: sessions.map((s, idx) => {
+                  const created = s.createdAt ? new Date(s.createdAt * 1000).toLocaleTimeString() : 'Unknown';
+                  const label = `${s.name} ${chalk.dim(`(started ${created})`)}`;
+                  return { name: label, value: String(idx) };
+                }),
+              }]);
+              target = sessions[parseInt(sessionChoice, 10)] || sessions[0];
+            }
+
+            await execa('tmux', [...target.socketArgs, 'attach', '-t', target.name, '-r'], { stdio: 'inherit', reject: false });
+            logSessionEvent('host_mirror_attached', { session: target.name, source: target.source });
           } catch (err) {
             console.log(chalk.yellow('  ⚠️  Could not attach to tmux.'));
             console.log(chalk.dim(`     ${err.message}`));
@@ -884,7 +931,13 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               await execaCommand('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name = \'sshd.exe\'\\" | Where-Object { $_.CommandLine -match \'sshd:.*@\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"', { reject: false });
             } else {
               await execaCommand("pkill -f 'sshd:.*@'", { shell: true, reject: false });
-              await execa('tmux', [...tmuxSocketArgs(), 'kill-session', '-t', TMUX_SESSION_NAME], { reject: false });
+              await execa('tmux', [...tmuxSocketArgs(), 'kill-server'], { reject: false });
+              const legacySessions = await listTmuxSessions();
+              for (const session of legacySessions) {
+                if (isSecureLinkSession(session.name)) {
+                  await execa('tmux', ['kill-session', '-t', session.name], { reject: false });
+                }
+              }
             }
             spinner.succeed('All client SSH sessions terminated');
             logSessionEvent('host_sessions_terminated');
