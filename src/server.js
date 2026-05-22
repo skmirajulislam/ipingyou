@@ -124,6 +124,7 @@ const store = new Map(); // uid → { iv, ciphertext, salt, createdAt, clients: 
 
 // ─── Security Helpers ────────────────────────────────────────
 const SAFE_PARAM = /^[a-zA-Z0-9_-]{1,64}$/;
+const HOST_TOKEN_FORMAT = /^[a-f0-9]{64}$/i;
 
 function isSafeParam(val) {
   return typeof val === 'string' && SAFE_PARAM.test(val);
@@ -185,7 +186,7 @@ app.get('/health', (_req, res) => {
  */
 app.post('/register', strictLimiter, (req, res) => {
   try {
-    const { uid, iv, ciphertext, salt, approvalRequired = false, oneTime = false } = req.body;
+    const { uid, iv, ciphertext, salt, approvalRequired = false, oneTime = false, hostToken: providedHostToken } = req.body;
 
     if (!uid || !iv || !ciphertext || !salt) {
       recordViolation(req);
@@ -219,8 +220,10 @@ app.post('/register', strictLimiter, (req, res) => {
       return res.status(503).json({ error: 'Broker is at maximum capacity. Please try again later.' });
     }
 
-    // Generate a cryptographic host token — only the host receives this
-    const hostToken = generateHostToken(uid + Date.now().toString());
+    // Use provided host token if valid; otherwise generate a fresh one
+    const hostToken = (typeof providedHostToken === 'string' && HOST_TOKEN_FORMAT.test(providedHostToken))
+      ? providedHostToken
+      : generateHostToken(uid + Date.now().toString());
 
     // Store the encrypted blob as-is — broker NEVER decrypts
     store.set(uid, {

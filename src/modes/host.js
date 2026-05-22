@@ -221,7 +221,7 @@ async function promptOneTimeSharePath() {
   return sharePath.trim() === '~' ? os.homedir() : sharePath.trim().replace(/^~(?=\/)/, os.homedir());
 }
 
-async function startLocalHostDashboard(uid, password, serviceConfig, hostToken) {
+async function startLocalHostDashboard(uid, password, serviceConfig, sessionState) {
   const { default: express } = await import('express');
   const { default: open } = await import('open');
   const app = express();
@@ -251,7 +251,7 @@ async function startLocalHostDashboard(uid, password, serviceConfig, hostToken) 
     const push = async () => {
       if (closed) return;
       try {
-        const data = await fetchApprovalRequests(BROKER_URL, uid, hostToken).catch(() => ({ approvals: [] }));
+        const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken).catch(() => ({ approvals: [] }));
         res.write(`event: approvals\n`);
         res.write(`data: ${JSON.stringify(data)}\n\n`);
       } catch { }
@@ -286,7 +286,7 @@ async function startLocalHostDashboard(uid, password, serviceConfig, hostToken) 
     const { requestId, decision } = req.body || {};
     if (!requestId || !decision) return res.status(400).json({ error: 'requestId and decision required' });
     try {
-      await decideApprovalRequest(BROKER_URL, uid, requestId, decision, hostToken);
+      await decideApprovalRequest(BROKER_URL, uid, requestId, decision, sessionState.hostToken);
       recordEvent('approval_decision', { uid, requestId, decision, via: 'dashboard' });
       res.json({ ok: true });
     } catch (err) {
@@ -296,7 +296,7 @@ async function startLocalHostDashboard(uid, password, serviceConfig, hostToken) 
 
   app.post('/api/revoke', async (_req, res) => {
     try {
-      await revokeUID(BROKER_URL, uid, hostToken);
+      await revokeUID(BROKER_URL, uid, sessionState.hostToken);
       recordEvent('uid_revoked', { uid, via: 'dashboard' });
       res.json({ ok: true });
     } catch (err) {
@@ -545,7 +545,7 @@ async function spawnPrivateBroker() {
 /**
  * Display the host dashboard and handle user input.
  */
-async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProcess, hostToken) {
+async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessionState) {
   let chatServerInstance = null;
   let chatTunnelProcess = null;
   let dashboardInstance = null;
@@ -559,7 +559,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
     console.log(`  ║  ${chalk.cyan('UID:')}        ${chalk.bold.white(uid.padEnd(30))}║`);
     console.log(`  ║  ${chalk.cyan('Password:')}   ${chalk.bold.white(password.padEnd(30))}║`);
     console.log(`  ║  ${chalk.cyan('Service:')}    ${chalk.dim(serviceConfig.type.toUpperCase() + ' (Port ' + serviceConfig.port + ')').padEnd(30)}║`);
-    console.log(`  ║  ${chalk.cyan('Tunnel:')}     ${chalk.dim(tunnelUrl.substring(0, 40))}  ║`);
+    console.log(`  ║  ${chalk.cyan('Tunnel:')}     ${chalk.dim(sessionState.tunnelUrl.substring(0, 40))}  ║`);
     if (serviceConfig.chatUrl) {
       console.log(`  ║  ${chalk.cyan('Chat URL:')}   ${chalk.dim(serviceConfig.chatUrl.substring(0, 40))}  ║`);
     }
@@ -624,7 +624,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
       switch (action) {
         case 'approvals': {
           try {
-            const data = await fetchApprovalRequests(BROKER_URL, uid, hostToken);
+            const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
             const pending = (data.approvals || []).filter(item => item.status === 'pending');
             if (pending.length === 0) {
               console.log(chalk.yellow('  No pending approval requests.'));
@@ -656,7 +656,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
                 ],
               }]);
               if (decision !== 'skip') {
-                await decideApprovalRequest(BROKER_URL, uid, request.id, decision, hostToken);
+                await decideApprovalRequest(BROKER_URL, uid, request.id, decision, sessionState.hostToken);
                 recordEvent('approval_decision', { uid, requestId: request.id, decision, username: details.username });
               }
             }
@@ -675,8 +675,8 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
               chatTunnelProcess = null;
               chatServerInstance = null;
               delete serviceConfig.chatUrl;
-              const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
-              if (res.success && res.hostToken) hostToken = res.hostToken;
+              const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
+              if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
               renderDashboard();
             }
           });
@@ -684,8 +684,8 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           console.log(chalk.dim('  Provisioning Cloudflare tunnel for chat...'));
           chatTunnelProcess = await spawnTunnelSupervised(`http://localhost:${chatServerInstance.port}`, async (newUrl) => {
             serviceConfig.chatUrl = newUrl;
-            const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
-            if (res.success && res.hostToken) hostToken = res.hostToken;
+            const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
+            if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
             renderDashboard();
           });
 
@@ -698,7 +698,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         }
 
         case 'dashboard': {
-          dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig, hostToken);
+          dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig, sessionState);
           logSessionEvent('host_dashboard_opened');
           return waitForAction();
         }
@@ -748,7 +748,7 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
           const spinner = createSpinner('Fetching secure client telemetry...', networkSpinner).start();
           try {
             const res = await fetch(`${BROKER_URL}/clients/${uid}`, {
-              headers: hostToken ? { 'x-host-token': hostToken } : {}
+              headers: sessionState.hostToken ? { 'x-host-token': sessionState.hostToken } : {}
             });
             if (!res.ok) throw new Error('Failed to fetch from broker');
             const data = await res.json();
@@ -786,8 +786,8 @@ async function hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProc
         }
 
         case 'reregister':
-          const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
-          if (res.success && res.hostToken) hostToken = res.hostToken;
+          const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
+          if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
           logSessionEvent('host_broker_reregistered');
           return waitForAction();
 
@@ -997,24 +997,23 @@ export async function startHostMode() {
     console.log(chalk.dim(`  ℹ️  Ensure your ${protocol.toUpperCase()} service is running on port ${targetPort}.`));
   }
 
-  let tunnelUrl = null;
-  let hostToken = null;
+  const sessionState = { tunnelUrl: null, hostToken: null };
   const tunnelProcess = await spawnTunnelSupervised(targetUrl, async (newUrl) => {
-    tunnelUrl = newUrl;
+    sessionState.tunnelUrl = newUrl;
     // Register or re-register with broker when tunnel is spawned/respawned
-    const res = await registerWithBroker(BROKER_URL, uid, tunnelUrl, password, serviceConfig);
+    const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
     if (!res.success) {
       console.error(chalk.red(`\n  ❌ FATAL: Could not register with broker at ${BROKER_URL}`));
       logSessionEvent('host_broker_register_failed', { broker: BROKER_URL }, 'error');
       process.exit(1);
     }
-    if (res.hostToken) hostToken = res.hostToken;
+    if (res.hostToken) sessionState.hostToken = res.hostToken;
   });
 
-  // Wait for the first URL to be generated before showing the dashboard
-  await waitForValue(() => tunnelUrl, 30000, 'Cloudflare tunnel startup');
+  // Wait for the tunnel AND broker registration to complete before showing dashboard
+  await waitForValue(() => sessionState.hostToken, 30000, 'Cloudflare tunnel and Broker startup');
 
-  setRevokeOnExit(uid, BROKER_URL, () => hostToken);
+  setRevokeOnExit(uid, BROKER_URL, () => sessionState.hostToken);
 
-  await hostDashboard(uid, tunnelUrl, password, serviceConfig, tunnelProcess, hostToken);
+  await hostDashboard(uid, password, serviceConfig, tunnelProcess, sessionState);
 }

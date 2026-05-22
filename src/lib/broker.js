@@ -1,5 +1,6 @@
 import chalk from 'chalk';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { decrypt, encrypt } from './crypto.js';
 import { createSpinner, cryptoSpinner, networkSpinner } from './animations.js';
 import { logSessionEvent } from './session-log.js';
@@ -51,6 +52,7 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
     await new Promise(r => setTimeout(r, 600));
     const payload = JSON.stringify({ url: tunnelUrl, ...serviceConfig });
     const encrypted = encrypt(payload, password);
+    const localHostToken = crypto.randomBytes(32).toString('hex');
 
     spinner.text = 'Registering with broker...';
 
@@ -64,6 +66,7 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
         salt: encrypted.salt,
         approvalRequired: Boolean(serviceConfig.approvalRequired),
         oneTime: Boolean(serviceConfig.oneTimeSharePath),
+        hostToken: localHostToken,
       }),
     });
 
@@ -77,7 +80,7 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
     spinner.succeed(`Registered with broker ${chalk.dim(`(${brokerUrl})`)} ${chalk.green('[E2E encrypted]')}`);
     logSessionEvent('broker_registered', { uid, broker: brokerUrl });
     // Return the host authentication token — needed for all host-only broker operations
-    return { success: true, hostToken: result.hostToken || null };
+    return { success: true, hostToken: result.hostToken || localHostToken || null };
   } catch (err) {
     spinner.fail(`Broker registration failed: ${err.message}`);
     console.error(chalk.red(`  ❌ Error: ${err.message}`));
