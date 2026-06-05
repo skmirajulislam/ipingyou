@@ -15,6 +15,10 @@
 import crypto from 'node:crypto';
 import os from 'node:os';
 
+// Keyed secret for deterministic, non-reversible log masking tokens.
+// Can be overridden for stable cross-process correlation if needed.
+const MASKING_KEY = process.env.SECURE_PRINT_MASK_KEY || crypto.randomBytes(32).toString('hex');
+
 /**
  * Verify the current process is being run by the same OS user interactively.
  * Returns true if the caller is the legitimate host user on an interactive terminal.
@@ -43,8 +47,10 @@ function isVerifiedHostUser() {
  */
 function maskSensitive(value) {
   const normalized = String(value);
-  const salt = crypto.createHash('sha256').update(`secure-print-mask:${normalized}`).digest();
-  const hash = crypto.pbkdf2Sync(normalized, salt, 210000, 32, 'sha256').toString('hex');
+  const hash = crypto
+    .createHmac('sha256', MASKING_KEY)
+    .update(normalized)
+    .digest('hex');
   return `[sha256:${hash.slice(0, 12)}…]`;
 }
 
