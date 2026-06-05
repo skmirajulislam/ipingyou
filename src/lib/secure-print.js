@@ -43,15 +43,14 @@ function isVerifiedHostUser() {
 
 /**
  * Mask a sensitive value for log-safe output.
- * Returns a SHA-256-based PBKDF2 hash prefix so the value can be correlated without revealing it.
+ * Returns a PBKDF2-derived hash prefix so the value can be correlated without revealing it.
  */
 function maskSensitive(value) {
   const normalized = String(value);
   const hash = crypto
-    .createHmac('sha256', MASKING_KEY)
-    .update(normalized)
-    .digest('hex');
-  return `[sha256:${hash.slice(0, 12)}…]`;
+    .pbkdf2Sync(MASKING_KEY, normalized, 210000, 32, 'sha256')
+    .toString('hex');
+  return `[pbkdf2:${hash.slice(0, 12)}…]`;
 }
 
 /**
