@@ -27,6 +27,7 @@ import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
 import { buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
 import { buildTmuxSessionName, tmuxSocketCommand } from '../lib/tmux.js';
 import open from 'open';
+import { secureSensitiveUrl } from '../lib/secure-print.js';
 import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -702,7 +703,7 @@ async function handleClientChat(uid, password, cachedChatUrl) {
       const fullUrl = `${chatUrl}#${password}`;
       await open(fullUrl);
     } catch {
-      console.log(chalk.cyan(`  👉 Please open: ${chatUrl}#${password}`));
+      console.log(chalk.cyan(`  👉 Please open: ${secureSensitiveUrl(chatUrl, password)}`));
     }
   } else {
     spinner.warn('The host has not started a chat room yet.');

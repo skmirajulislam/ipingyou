@@ -2,6 +2,7 @@ import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import open from 'open';
 import chalk from 'chalk';
+import { secureSensitiveUrl } from './secure-print.js';
 
 const HTML_CONTENT = `
 <!DOCTYPE html>
@@ -322,6 +323,6 @@ export async function openLocalChatUI(port, password) {
     const chatUrl = `http://localhost:${port}#${password}`;
     await open(chatUrl);
   } catch {
-    console.log(chalk.dim(`     Unable to auto-open browser. Visit http://localhost:${port}#${password}`));
+    console.log(chalk.dim(`     Unable to auto-open browser. Visit ${secureSensitiveUrl(`http://localhost:${port}`, password)}`));
   }
 }

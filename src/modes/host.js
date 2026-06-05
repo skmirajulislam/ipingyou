@@ -26,6 +26,7 @@ import { cleanupAll, killProcessTree, trackPID, untrackPID, setRevokeOnExit, add
 import { detectOS } from '../lib/platform.js';
 import { createSpinner, networkSpinner, typeText } from '../lib/animations.js';
 import { startChatServer, openLocalChatUI } from '../lib/chat.js';
+import { secureSensitive } from '../lib/secure-print.js';
 import { spawnTunnelSupervised } from '../lib/tunnel.js';
 import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID } from '../lib/broker.js';
 import { cleanupSessionLog, getSessionLogPath, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
@@ -674,7 +675,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
     console.log(chalk.bold('  ║         🛡️  SecureLink — HOST MODE ACTIVE          ║'));
     console.log(chalk.bold('  ╠════════════════════════════════════════════════════╣'));
     console.log(`  ║  ${chalk.cyan('UID:')}        ${chalk.bold.white(uid.padEnd(30))}║`);
-    console.log(`  ║  ${chalk.cyan('Password:')}   ${chalk.bold.white(password.padEnd(30))}║`);
+    console.log(`  ║  ${chalk.cyan('Password:')}   ${chalk.bold.white(secureSensitive(password).padEnd(30))}║`);
     console.log(`  ║  ${chalk.cyan('Service:')}    ${chalk.dim(serviceConfig.type.toUpperCase() + ' (Port ' + serviceConfig.port + ')').padEnd(30)}║`);
     console.log(`  ║  ${chalk.cyan('Tunnel:')}     ${chalk.dim(sessionState.tunnelUrl.substring(0, 40))}  ║`);
     if (serviceConfig.chatUrl) {
@@ -994,7 +995,7 @@ export async function startHostMode() {
     },
   ]);
   const password = pwdInput.trim() || generateUID();
-  console.log(`  ${chalk.green('✓')} Password: ${chalk.bold.white(password)}`);
+  console.log(`  ${chalk.green('✓')} Password: ${chalk.bold.white(secureSensitive(password))}`);
   console.log('');
 
   // ─── Broker Selection ───

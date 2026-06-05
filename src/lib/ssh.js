@@ -26,7 +26,7 @@ export function formatScpRemotePath(remotePath) {
 
 export function getSshControlOptions(hostname) {
   if (process.platform === 'win32') return [];
-  const hash = crypto.createHash('sha1').update(hostname).digest('hex').slice(0, 10);
+  const hash = crypto.createHash('sha256').update(hostname).digest('hex').slice(0, 10);
   return [
     '-o', 'ControlMaster=auto',
     '-o', 'ControlPersist=5m',

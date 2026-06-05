@@ -3,6 +3,7 @@
  */
 
 import { execa, execaCommand } from 'execa';
+import { parse as shellParse } from 'shell-quote';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import fs from 'node:fs';
@@ -210,8 +211,13 @@ function showRateLimitWarnings(rateLimit) {
 }
 
 async function runLocalCommand(command) {
-  const result = await execaCommand(command, {
-    shell: true,
+  const parsed = shellParse(command);
+  // Filter out non-string tokens (shell operators like |, &&, ; etc.) to prevent injection
+  const args = parsed.filter(token => typeof token === 'string');
+  if (args.length === 0) {
+    return { exitCode: 1, stdout: '', stderr: 'Empty or unsafe command after parsing' };
+  }
+  const result = await execa(args[0], args.slice(1), {
     reject: false,
     timeout: 30000,
     maxBuffer: 1024 * 1024,
