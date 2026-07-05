@@ -1,4 +1,16 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+function getCloudflaredPathSync() {
+  const localBinDir = path.join(os.homedir(), '.ipingyou', 'bin');
+  const localPath = path.join(localBinDir, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+  if (fs.existsSync(localPath)) {
+    return localPath;
+  }
+  return 'cloudflared';
+}
 
 const SAFE_HOSTNAME_PATTERN = /^(?=.{1,253}$)(?!.*\.\.)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
 
@@ -58,7 +70,8 @@ export function getSshControlOptions(hostname) {
 
 export function buildProxyCommandOption(hostname) {
   const safeHostname = assertSafeHostname(hostname, 'tunnel hostname');
-  return ['-o', `ProxyCommand=cloudflared access tcp --hostname ${safeHostname}`];
+  const cfExecutable = getCloudflaredPathSync();
+  return ['-o', `ProxyCommand=${cfExecutable} access tcp --hostname ${safeHostname}`];
 }
 
 export function getKnownHostsOptions(persistKnownHosts = true) {

@@ -37,6 +37,8 @@ function startLiveLogSync(username, hostname, privateKeyPath, remoteDropPath, lo
   let lastSize = -1;
   let lastMtime = 0;
   let isSyncing = false;
+  let consecutiveFailures = 0;
+  let warnedOnce = false;
   const interval = setInterval(async () => {
     if (isSyncing) return;
     isSyncing = true;
@@ -65,9 +67,16 @@ function startLiveLogSync(username, hostname, privateKeyPath, remoteDropPath, lo
       if (result.exitCode === 0) {
         lastSize = stats.size;
         lastMtime = stats.mtimeMs;
+        consecutiveFailures = 0;
+      } else {
+        consecutiveFailures++;
+        if (consecutiveFailures >= 5 && !warnedOnce) {
+          warnedOnce = true;
+          logSessionEvent('client_log_sync_failing', { failures: consecutiveFailures, stderr: (result.stderr || '').slice(0, 200) }, 'warn');
+        }
       }
     } catch {
-      // Ignore background sync failures silently
+      consecutiveFailures++;
     } finally {
       isSyncing = false;
     }
@@ -616,6 +625,10 @@ export async function startClientMode(options = {}) {
       privateKeyPath = null;
     }
   }
+
+  // Push telemetry immediately so host can see the client in "See detailed client telemetry"
+  // even before the user picks an action (SSH/SCP/etc.)
+  await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, 'connected');
 
   // Start background E2E client log sync if sharedDropPath is configured
   if (payload.sharedDropPath && sessionLogPath) {

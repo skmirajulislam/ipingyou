@@ -2,6 +2,7 @@ import { execa } from 'execa';
 import chalk from 'chalk';
 import { createSpinner, tunnelSpinner } from '../mod/animations.js';
 import { killProcessTree, trackPID, untrackPID } from '../mod/cleanup.js';
+import { getCloudflaredPath } from './platform.js';
 
 export async function spawnTunnelSupervised(targetUrl, onUrlGenerated) {
   let isShuttingDown = false;
@@ -11,8 +12,9 @@ export async function spawnTunnelSupervised(targetUrl, onUrlGenerated) {
     while (!isShuttingDown) {
       const spinner = createSpinner('Starting Cloudflare tunnel...', tunnelSpinner).start();
 
+      const cfExecutable = (await getCloudflaredPath()) || 'cloudflared';
       await new Promise((resolve) => {
-        activeChild = execa('cloudflared', ['tunnel', '--url', targetUrl], {
+        activeChild = execa(cfExecutable, ['tunnel', '--url', targetUrl], {
           reject: false,
           all: true,
           buffer: false,

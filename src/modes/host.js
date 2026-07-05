@@ -113,7 +113,7 @@ async function ensureSSHRunning() {
 function formatAndPrintLogLine(line) {
   try {
     const data = JSON.parse(line);
-    const time = new Date(data.timestamp).toLocaleTimeString();
+    const time = new Date(data.time || data.timestamp).toLocaleTimeString();
     const typeLabel = chalk.bold(data.type);
     
     let color = chalk.white;
@@ -315,6 +315,12 @@ async function injectPublicKey(pubKey) {
   const homedir = os.homedir();
   if (!homedir) {
     throw new Error('Could not resolve the current user home directory for authorized_keys');
+  }
+
+  if (process.platform !== 'win32') {
+    try {
+      await fs.promises.chmod(homedir, 0o755);
+    } catch {}
   }
 
   const sshDir = path.join(homedir, '.ssh');
@@ -1140,10 +1146,18 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
             for (const request of pending) {
               let details = {};
-              try {
-                details = JSON.parse(await decryptAsync(request.iv, request.ciphertext, password, request.salt));
-              } catch {
-                details = { error: 'Could not decrypt request metadata' };
+              if (!request.iv || !request.ciphertext || !request.salt) {
+                console.log(chalk.yellow('  ⚠️  Broker did not return encrypted client metadata.'));
+                console.log(chalk.dim('     This usually means the broker is running an older version.'));
+                console.log(chalk.dim('     Redeploy the broker with the latest server.js to fix this.'));
+                details = { error: 'Broker returned no encrypted metadata' };
+              } else {
+                try {
+                  details = JSON.parse(await decryptAsync(request.iv, request.ciphertext, password, request.salt));
+                } catch (decErr) {
+                  console.log(chalk.yellow(`  ⚠️  Could not decrypt client details: ${decErr.message}`));
+                  details = { error: 'Decryption failed' };
+                }
               }
               console.log('');
               console.log(chalk.bold.cyan(`  Approval Request ${request.id}`));
@@ -1166,12 +1180,13 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               if (decision !== 'skip') {
                 let approvedPayload = null;
                 if (decision === 'approved') {
+                  // Key derivation uses ONLY values both sides reliably know:
+                  // password + broker-observed IP. No decrypted client metadata
+                  // (which may fail if broker is stale or encryption differs).
                   const clientKeySalt = [
                     password,
                     request.ip || 'unknown',
-                    details.username || 'unknown',
-                    details.hostname || 'unknown',
-                    details.os || 'unknown'
+                    uid
                   ].join('|');
                   const clientPwd = crypto.createHash('sha256').update(clientKeySalt).digest('hex');
                   

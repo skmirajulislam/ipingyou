@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commandExists, detectOS, isLinuxSSHActive } from '../lib/services/platform.js';
+import { commandExists, detectOS, isLinuxSSHActive, getCloudflaredPath } from '../lib/services/platform.js';
 import { pingBroker } from '../lib/client/broker.js';
 import { classifyCommand, redactSensitive } from '../lib/ai/safety.js';
 
@@ -230,7 +230,8 @@ export async function startDoctorMode(options = {}) {
   await check('ssh client', () => commandVersion('ssh', ['-V']));
   await check('scp client', () => commandFound('scp'));
   await check('ssh-keygen', () => commandFound('ssh-keygen'));
-  await check('cloudflared', () => commandVersion('cloudflared', ['--version']));
+  const cfPath = await getCloudflaredPath();
+  await check('cloudflared', () => commandVersion(cfPath || 'cloudflared', ['--version']));
 
   console.log(chalk.bold('\n  Host readiness'));
   await check('SSH service', checkSshService);

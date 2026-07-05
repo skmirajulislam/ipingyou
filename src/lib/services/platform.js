@@ -225,92 +225,47 @@ async function autoInstallDependency(dep, osInfo) {
       }
     }
   } else if (dep === 'cloudflared') {
-    if (osInfo.isMac) {
-      const hasBrew = await commandExists('brew');
-      if (hasBrew) {
-        await executeWithRetry('brew', ['install', 'cloudflared']);
-      } else {
-        console.log(chalk.yellow('  Homebrew not found. Downloading cloudflared binary directly...'));
-        const arch = osInfo.arch === 'arm64' ? 'arm64' : 'amd64';
-        const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-darwin-${arch}.tgz`;
-        const tgzPath = path.join(os.tmpdir(), 'cloudflared.tgz');
-        await downloadUrlToPath(url, tgzPath);
-        await executeWithRetry('tar', ['-xzf', tgzPath, '-C', os.tmpdir()]);
-        await executeWithRetry('sudo', ['cp', path.join(os.tmpdir(), 'cloudflared'), '/usr/local/bin/cloudflared']);
-        await executeWithRetry('sudo', ['chmod', '+x', '/usr/local/bin/cloudflared']);
-      }
-    } else if (osInfo.isWindows) {
-      const hasWinget = await commandExists('winget');
-      if (hasWinget) {
-        await executeWithRetry('winget', ['install', '--id', 'Cloudflare.cloudflared', '--silent', '--accept-source-agreements', '--accept-package-agreements']);
-      } else {
-        console.log(chalk.yellow('  winget not found. Downloading cloudflared executable directly...'));
-        const arch = osInfo.arch === 'x64' ? 'amd64' : '386';
-        const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-windows-${arch}.exe`;
-        const destDir = path.join(process.env.LOCALAPPDATA, 'Microsoft', 'WindowsApps');
-        await fs.promises.mkdir(destDir, { recursive: true });
-        const destPath = path.join(destDir, 'cloudflared.exe');
-        await downloadUrlToPath(url, destPath);
-        console.log(chalk.green(`  Downloaded cloudflared to ${destPath}`));
-      }
-    } else if (osInfo.isLinux) {
-      const distro = await detectLinuxDistro();
-      const arch = osInfo.arch === 'x64' ? 'amd64' : (osInfo.arch === 'arm64' ? 'arm64' : '386');
-      
-      let installed = false;
-      if (distro === 'debian' || (await commandExists('apt-get'))) {
-        try {
-          const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-linux-${arch}.deb`;
-          const debPath = path.join(os.tmpdir(), 'cloudflared.deb');
-          await downloadUrlToPath(url, debPath);
-          try {
-            await executeWithRetry('sudo', ['dpkg', '-i', debPath]);
-          } catch {
-            await executeWithRetry('sudo', ['apt-get', 'update']);
-            await executeWithRetry('sudo', ['apt-get', 'install', '-f', '-y']);
-          }
-          installed = true;
-        } catch (err) {
-          console.log(chalk.yellow(`  Failed to install via deb package: ${err.message}. Trying direct binary...`));
-        }
-      } else if (distro === 'fedora' || (await commandExists('dnf')) || (await commandExists('yum'))) {
-        try {
-          const rpmArch = osInfo.arch === 'x64' ? 'x86_64' : (osInfo.arch === 'arm64' ? 'aarch64' : 'i386');
-          const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-linux-${rpmArch}.rpm`;
-          const rpmPath = path.join(os.tmpdir(), 'cloudflared.rpm');
-          await downloadUrlToPath(url, rpmPath);
-          const pkgManager = await commandExists('dnf') ? 'dnf' : 'yum';
-          await executeWithRetry('sudo', [pkgManager, 'install', '-y', rpmPath]);
-          installed = true;
-        } catch (err) {
-          console.log(chalk.yellow(`  Failed to install via rpm package: ${err.message}. Trying direct binary...`));
-        }
-      } else if (distro === 'arch' || (await commandExists('pacman'))) {
-        try {
-          await executeWithRetry('sudo', ['pacman', '-S', '--noconfirm', 'cloudflared']);
-          installed = true;
-        } catch (err) {
-          console.log(chalk.yellow(`  Failed to install via pacman: ${err.message}. Trying direct binary...`));
-        }
-      }
+    const localBinDir = path.join(os.homedir(), '.ipingyou', 'bin');
+    await fs.promises.mkdir(localBinDir, { recursive: true, mode: 0o700 });
+    const localPath = path.join(localBinDir, osInfo.isWindows ? 'cloudflared.exe' : 'cloudflared');
 
-      if (!installed) {
-        console.log(chalk.yellow('  Downloading cloudflared binary directly...'));
-        const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-linux-${arch}`;
-        const binPath = path.join(os.tmpdir(), 'cloudflared');
-        await downloadUrlToPath(url, binPath);
-        await executeWithRetry('sudo', ['cp', binPath, '/usr/local/bin/cloudflared']);
-        await executeWithRetry('sudo', ['chmod', '+x', '/usr/local/bin/cloudflared']);
-      }
+    if (osInfo.isMac) {
+      const arch = osInfo.arch === 'arm64' ? 'arm64' : 'amd64';
+      const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-darwin-${arch}.tgz`;
+      const tgzPath = path.join(os.tmpdir(), 'cloudflared.tgz');
+      await downloadUrlToPath(url, tgzPath);
+      await execa('tar', ['-xzf', tgzPath, '-C', localBinDir]);
+    } else if (osInfo.isWindows) {
+      const arch = osInfo.arch === 'x64' ? 'amd64' : '386';
+      const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-windows-${arch}.exe`;
+      await downloadUrlToPath(url, localPath);
+    } else if (osInfo.isLinux) {
+      const arch = osInfo.arch === 'x64' ? 'amd64' : (osInfo.arch === 'arm64' ? 'arm64' : '386');
+      const url = `https://github.com/cloudflare/cloudflared/${relLatest}/download/cloudflared-linux-${arch}`;
+      await downloadUrlToPath(url, localPath);
+      await fs.promises.chmod(localPath, 0o755);
     }
   }
 }
 
+export async function getCloudflaredPath() {
+  if (await commandExists('cloudflared')) {
+    return 'cloudflared';
+  }
+  const localBinDir = path.join(os.homedir(), '.ipingyou', 'bin');
+  const localPath = path.join(localBinDir, process.platform === 'win32' ? 'cloudflared.exe' : 'cloudflared');
+  if (fs.existsSync(localPath)) {
+    return localPath;
+  }
+  return null;
+}
+
 export async function checkDependencies() {
   const osInfo = detectOS();
+  const cfPath = await getCloudflaredPath();
   let results = {
     ssh: await commandExists('ssh'),
-    cloudflared: await commandExists('cloudflared'),
+    cloudflared: cfPath !== null,
   };
 
   const missing = Object.entries(results)
@@ -338,9 +293,10 @@ export async function checkDependencies() {
     }
 
     // Re-verify after installation
+    const finalCfPath = await getCloudflaredPath();
     results = {
       ssh: await commandExists('ssh'),
-      cloudflared: await commandExists('cloudflared'),
+      cloudflared: finalCfPath !== null,
     };
 
     const stillMissing = Object.entries(results)

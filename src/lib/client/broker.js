@@ -216,20 +216,20 @@ export async function resolveUID(brokerUrl, uid, password, silent = false, reque
     try {
       let decPassword = password;
       if (data.isClientSpecific) {
+        // Key derivation must match host side exactly:
+        // [password, broker-observed-IP, uid].join('|')
         const clientKeySalt = [
           password,
           data.ip || 'unknown',
-          os.userInfo().username,
-          os.hostname(),
-          `${os.type()} ${os.release()} (${os.arch()})`
+          uid
         ].join('|');
         decPassword = crypto.createHash('sha256').update(clientKeySalt).digest('hex');
       }
       decryptedPayload = await decryptAsync(data.iv, data.ciphertext, decPassword, data.salt);
-    } catch {
-      if (spinner) spinner.fail('Decryption failed — incorrect password or corrupted data');
-      if (!spinner) console.error(chalk.red('  ❌ Error: Could not decrypt tunnel data. Incorrect password.'));
-      logSessionEvent('broker_decrypt_failed', { uid }, 'warn');
+    } catch (decErr) {
+      if (spinner) spinner.fail(`Decryption failed — ${decErr.message}`);
+      if (!spinner) console.error(chalk.red(`  ❌ Error: Could not decrypt tunnel data: ${decErr.message}`));
+      logSessionEvent('broker_decrypt_failed', { uid, error: decErr.message }, 'warn');
       return null;
     }
 
