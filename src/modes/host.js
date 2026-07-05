@@ -21,7 +21,9 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { generateUID } from '../lib/uid.js';
+import { openUrl } from '../lib/open-url.js';
 import { decryptAsync } from '../lib/crypto.js';
 import { cleanupAll, killProcessTree, trackPID, untrackPID, setRevokeOnExit, addCleanupHook } from '../lib/cleanup.js';
 import { detectOS } from '../lib/platform.js';
@@ -35,6 +37,16 @@ import { TMUX_SESSION_NAME, TMUX_SESSION_PREFIX, tmuxSocketArgs } from '../lib/t
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
+
+function escapeDashboardHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  })[character]);
+}
 
 async function waitForValue(getValue, timeoutMs, label) {
   const startedAt = Date.now();
@@ -209,15 +221,26 @@ async function injectPublicKey(pubKey) {
   }
 
   const authKeysPath = path.join(sshDir, 'authorized_keys');
-  await fs.promises.appendFile(authKeysPath, `\n${pubKey}\n`);
-  return authKeysPath;
+  const existing = await fs.promises.lstat(authKeysPath).catch(() => null);
+  if (existing?.isSymbolicLink()) {
+    throw new Error('Refusing to modify a symlinked authorized_keys file');
+  }
+  const authorizedKey = `no-agent-forwarding,no-X11-forwarding ${pubKey}`;
+  await fs.promises.appendFile(authKeysPath, `\n${authorizedKey}\n`, { mode: 0o600 });
+  await fs.promises.chmod(authKeysPath, 0o600);
+  return { authKeysPath, authorizedKey };
 }
 
-async function removePublicKey(authKeysPath, pubKey) {
+async function removePublicKey(authKeysPath, authorizedKey) {
   if (fs.existsSync(authKeysPath)) {
+    const stat = await fs.promises.lstat(authKeysPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error('Refusing to modify a symlinked authorized_keys file');
+    }
     let keys = await fs.promises.readFile(authKeysPath, 'utf8');
-    keys = keys.replace(`\n${pubKey}\n`, '');
+    keys = keys.replace(`\n${authorizedKey}\n`, '');
     await fs.promises.writeFile(authKeysPath, keys);
+    await fs.promises.chmod(authKeysPath, 0o600);
   }
 }
 
@@ -275,13 +298,17 @@ async function promptOneTimeSharePath() {
 
 async function startLocalHostDashboard(uid, password, serviceConfig, sessionState) {
   const { default: express } = await import('express');
-  const { default: open } = await import('open');
   const app = express();
   const startedAt = new Date().toISOString();
   const decryptedClientCache = new Map();
   const MAX_DECRYPTED_CLIENT_CACHE = 100;
   const activeEventStreams = new Set();
   const MAX_EVENT_STREAMS = 5;
+  const dashboardUid = escapeDashboardHtml(uid);
+  const dashboardService = escapeDashboardHtml(String(serviceConfig.type || '').toUpperCase());
+  const dashboardPort = escapeDashboardHtml(serviceConfig.port);
+  const dashboardDropPath = escapeDashboardHtml(serviceConfig.sharedDropPath || 'none');
+  const dashboardSharePath = escapeDashboardHtml(serviceConfig.oneTimeSharePath || 'none');
 
   async function fetchDecryptedClients() {
     const brokerRes = await fetch(`${BROKER_URL}/clients/${uid}`, {
@@ -464,6 +491,17 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
   });
 
   app.get('/', (_req, res) => {
+    const scriptNonce = crypto.randomBytes(18).toString('base64');
+    res.set('Content-Security-Policy', [
+      "default-src 'self'",
+      `script-src 'nonce-${scriptNonce}'`,
+      "style-src 'self' 'unsafe-inline'",
+      "connect-src 'self'",
+      "img-src 'none'",
+      "object-src 'none'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+    ].join('; '));
     res.type('html').send(`<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>iPingYou Host Dashboard</title>
 <style>
@@ -504,22 +542,22 @@ code{background:var(--bg);padding:2px 8px;border-radius:4px;font-size:0.85rem}
 </style></head>
 <body>
 <div class="header">
-  <div><h1>🛡️ iPingYou Host Dashboard</h1><span style="color:var(--dim);font-size:0.85rem">UID: <code>${uid}</code></span></div>
+  <div><h1>🛡️ iPingYou Host Dashboard</h1><span style="color:var(--dim);font-size:0.85rem">UID: <code>${dashboardUid}</code></span></div>
   <div style="display:flex;gap:1rem;align-items:center">
     <span class="badge">● LIVE</span>
-    <button class="btn btn-revoke" onclick="revokeSession()">🚫 Revoke Session</button>
+    <button id="revoke-session" class="btn btn-revoke" type="button">🚫 Revoke Session</button>
   </div>
 </div>
 
 <div class="grid">
   <div class="card">
     <h2>📊 Session Info</h2>
-    <div class="info-row"><span class="info-label">UID</span><span class="info-value"><code>${uid}</code></span></div>
+    <div class="info-row"><span class="info-label">UID</span><span class="info-value"><code>${dashboardUid}</code></span></div>
     <div class="info-row"><span class="info-label">Password</span><span class="info-value"><code>[Hidden — see terminal]</code></span></div>
-    <div class="info-row"><span class="info-label">Service</span><span class="info-value">${serviceConfig.type.toUpperCase()} on port ${serviceConfig.port}</span></div>
+    <div class="info-row"><span class="info-label">Service</span><span class="info-value">${dashboardService} on port ${dashboardPort}</span></div>
     <div class="info-row"><span class="info-label">Approval Gate</span><span class="info-value">${serviceConfig.approvalRequired ? '<span style="color:var(--green)">✓ Enabled</span>' : '<span style="color:var(--dim)">Disabled</span>'}</span></div>
-    <div class="info-row"><span class="info-label">Drop Folder</span><span class="info-value"><code>${serviceConfig.sharedDropPath || 'none'}</code></span></div>
-    <div class="info-row"><span class="info-label">One-Time Share</span><span class="info-value"><code>${serviceConfig.oneTimeSharePath || 'none'}</code></span></div>
+    <div class="info-row"><span class="info-label">Drop Folder</span><span class="info-value"><code>${dashboardDropPath}</code></span></div>
+    <div class="info-row"><span class="info-label">One-Time Share</span><span class="info-value"><code>${dashboardSharePath}</code></span></div>
     <div class="info-row"><span class="info-label">Chat</span><span class="info-value">${serviceConfig.chatUrl ? '<span style="color:var(--green)">Active</span>' : '<span style="color:var(--dim)">Not started</span>'}</span></div>
     <div class="info-row"><span class="info-label">Uptime</span><span class="info-value" id="uptime">—</span></div>
   </div>
@@ -537,7 +575,7 @@ code{background:var(--bg);padding:2px 8px;border-radius:4px;font-size:0.85rem}
 
 <div id="toast"></div>
 
-<script>
+<script nonce="${scriptNonce}">
 const startedAt = new Date("${startedAt}");
 
 function showToast(msg) {
@@ -547,14 +585,11 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 2500);
 }
  
-function escapeHtml(value) {
- return String(value || '').replace(/[&<>"']/g, (m) => ({
-   '&': '&amp;',
-   '<': '&lt;',
-   '>': '&gt;',
-   '"': '&quot;',
-   "'": '&#39;',
- })[m]);
+function appendEmptyState(container, text) {
+  const message = document.createElement('p');
+  message.className = 'empty';
+  message.textContent = text;
+  container.replaceChildren(message);
 }
 
 function updateUptime() {
@@ -615,39 +650,63 @@ function renderApprovals(approvals) {
   document.getElementById('approval-count').textContent = pending.length > 0 ? '(' + pending.length + ' pending)' : '';
 
   if (approvals.length === 0) {
-    container.innerHTML = '<p class="empty">No approval requests yet</p>';
+    appendEmptyState(container, 'No approval requests yet');
     return;
   }
 
-  let html = '';
+  const fragment = document.createDocumentFragment();
   for (const req of pending) {
-    html += '<div class="approval-item">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center">'
-      + '<strong>Request ' + req.id + '</strong>'
-      + '<span class="status-badge status-pending">PENDING</span></div>'
-      + '<div class="meta">Submitted: ' + new Date(req.createdAt).toLocaleTimeString() + '</div>'
-      + '<div class="actions">'
-      + '<button class="btn btn-approve" data-id="' + req.id + '" data-decision="approved">✅ Approve</button>'
-      + '<button class="btn btn-deny" data-id="' + req.id + '" data-decision="denied">❌ Deny</button>'
-      + '</div></div>';
+    const item = document.createElement('div');
+    item.className = 'approval-item';
+    const heading = document.createElement('div');
+    heading.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
+    const title = document.createElement('strong');
+    title.textContent = 'Request ' + String(req.id || '');
+    const badge = document.createElement('span');
+    badge.className = 'status-badge status-pending';
+    badge.textContent = 'PENDING';
+    heading.append(title, badge);
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = 'Submitted: ' + new Date(req.createdAt).toLocaleTimeString();
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    for (const choice of [
+      { decision: 'approved', label: '✅ Approve', className: 'btn btn-approve' },
+      { decision: 'denied', label: '❌ Deny', className: 'btn btn-deny' }
+    ]) {
+      const button = document.createElement('button');
+      button.className = choice.className;
+      button.type = 'button';
+      button.textContent = choice.label;
+      button.addEventListener('click', function() {
+        decide(String(req.id || ''), choice.decision);
+      });
+      actions.appendChild(button);
+    }
+    item.append(heading, meta, actions);
+    fragment.appendChild(item);
   }
   for (const req of decided) {
-    const cls = req.status === 'approved' ? 'status-approved' : 'status-denied';
-    html += '<div class="approval-item" style="opacity:0.6">'
-      + '<div style="display:flex;justify-content:space-between;align-items:center">'
-      + '<strong>Request ' + req.id + '</strong>'
-      + '<span class="status-badge ' + cls + '">' + req.status.toUpperCase() + '</span></div>'
-      + '<div class="meta">Decided: ' + (req.decidedAt ? new Date(req.decidedAt).toLocaleTimeString() : 'N/A') + '</div>'
-      + '</div>';
+    const status = req.status === 'approved' ? 'approved' : 'denied';
+    const item = document.createElement('div');
+    item.className = 'approval-item';
+    item.style.opacity = '0.6';
+    const heading = document.createElement('div');
+    heading.style.cssText = 'display:flex;justify-content:space-between;align-items:center';
+    const title = document.createElement('strong');
+    title.textContent = 'Request ' + String(req.id || '');
+    const badge = document.createElement('span');
+    badge.className = 'status-badge status-' + status;
+    badge.textContent = status.toUpperCase();
+    heading.append(title, badge);
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = 'Decided: ' + (req.decidedAt ? new Date(req.decidedAt).toLocaleTimeString() : 'N/A');
+    item.append(heading, meta);
+    fragment.appendChild(item);
   }
-  container.innerHTML = html;
-
-  // Attach click handlers via event delegation (avoids inline quote escaping issues)
-  container.querySelectorAll('[data-decision]').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-      decide(btn.getAttribute('data-id'), btn.getAttribute('data-decision'));
-    });
-  });
+  container.replaceChildren(fragment);
 }
 
 async function decide(requestId, decision) {
@@ -670,34 +729,48 @@ async function revokeSession() {
     else showToast('Failed to revoke');
   } catch (err) { showToast('Error: ' + err.message); }
 }
+document.getElementById('revoke-session').addEventListener('click', revokeSession);
 
 function renderClients(clients) {
   const container = document.getElementById('clients');
   if (!clients || clients.length === 0) {
-    container.innerHTML = '<p class="empty">No clients connected yet</p>';
+    appendEmptyState(container, 'No clients connected yet');
     document.getElementById('client-count').textContent = '';
     return;
   }
  
   document.getElementById('client-count').textContent = '(' + clients.length + ' connected)';
-  let html = '';
+  const fragment = document.createDocumentFragment();
   clients.forEach((c, idx) => {
+    const card = document.createElement('div');
+    card.className = 'client-card';
     if (c.error) {
-      html += '<div class="client-card"><strong>Client #' + (idx + 1) + '</strong> — payload decryption failed</div>';
+      const title = document.createElement('strong');
+      title.textContent = 'Client #' + (idx + 1);
+      card.append(title, document.createTextNode(' — payload decryption failed'));
+      fragment.appendChild(card);
       return;
     }
     const when = c.time || (c.seenAt ? new Date(c.seenAt).toLocaleTimeString() : 'Unknown');
-    html += '<div class="client-card">'
-      + '<strong>' + escapeHtml(c.username || 'Unknown') + '</strong>'
-      + ' — ' + escapeHtml(c.action || 'connected') + '<br>'
-      + '<span class="meta">IP: ' + escapeHtml(c.ip || 'Unknown') + '</span><br>'
-      + '<span class="meta">OS: ' + escapeHtml(c.os || 'Unknown') + '</span><br>'
-      + '<span class="meta">CPU: ' + escapeHtml(c.cpu || 'Unknown') + '</span><br>'
-      + '<span class="meta">RAM: ' + escapeHtml(c.ram || 'Unknown') + '</span><br>'
-      + '<span class="meta">Time: ' + escapeHtml(when) + '</span>'
-      + '</div>';
+    const title = document.createElement('strong');
+    title.textContent = String(c.username || 'Unknown');
+    card.append(title, document.createTextNode(' — ' + String(c.action || 'connected')), document.createElement('br'));
+    for (const field of [
+      ['IP', c.ip],
+      ['OS', c.os],
+      ['CPU', c.cpu],
+      ['RAM', c.ram],
+      ['Time', when]
+    ]) {
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = field[0] + ': ' + String(field[1] || 'Unknown');
+      card.appendChild(meta);
+      if (field[0] !== 'Time') card.appendChild(document.createElement('br'));
+    }
+    fragment.appendChild(card);
   });
-  container.innerHTML = html;
+  container.replaceChildren(fragment);
 }
  
 </script>
@@ -709,7 +782,7 @@ function renderClients(clients) {
       const port = server.address().port;
       const url = `http://127.0.0.1:${port}`;
       console.log(chalk.green(`  ✓ Local dashboard: ${url}`));
-      try { await open(url); } catch { }
+      try { await openUrl(url); } catch { }
       resolve({ url, close: () => server.close() });
     });
   });
@@ -721,7 +794,6 @@ function renderClients(clients) {
 async function spawnPrivateBroker() {
   console.log(chalk.yellow('\n  ⚠️  Public Broker is unreachable. Spawning Private Broker...'));
 
-  const packageRoot = path.resolve(__dirname, '../..');
   const serverEntrypoint = path.join(__dirname, '../server.js');
   const requireFromServer = createRequire(serverEntrypoint);
   const requiredBrokerPackages = ['express', 'express-rate-limit', 'helmet'];
@@ -735,34 +807,10 @@ async function spawnPrivateBroker() {
   });
 
   if (missingPackages.length > 0) {
-    console.log(chalk.yellow(`  ⚠️  Missing broker runtime packages: ${missingPackages.join(', ')}`));
-    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const installResult = await execa(
-      npmCmd,
-      ['install', '--no-save', '--no-audit', '--no-fund', ...missingPackages],
-      { cwd: packageRoot, reject: false, all: true }
+    throw new Error(
+      `Private broker dependencies are missing: ${missingPackages.join(', ')}. `
+      + 'Reinstall iPingYou from its verified package before starting a private broker.'
     );
-
-    if (installResult.exitCode !== 0) {
-      const installOutput = installResult.all?.trim();
-      throw new Error(
-        `Private broker dependencies failed to install (${missingPackages.join(', ')})`
-        + (installOutput ? `: ${installOutput}` : '')
-      );
-    }
-
-    // Verify modules are now resolvable for the server entrypoint context.
-    const unresolved = missingPackages.filter((pkg) => {
-      try {
-        requireFromServer.resolve(pkg);
-        return false;
-      } catch {
-        return true;
-      }
-    });
-    if (unresolved.length > 0) {
-      throw new Error(`Private broker dependencies are still missing after install: ${unresolved.join(', ')}`);
-    }
   }
 
   // 1. Spawn the broker server process
@@ -1080,12 +1128,11 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           return waitForAction();
 
         case 'terminate': {
-          const spinner = createSpinner('Terminating active SSH sessions...', networkSpinner).start();
+          const spinner = createSpinner('Revoking session and closing its tunnel...', networkSpinner).start();
           try {
-            if (process.platform === 'win32') {
-              await execa('powershell', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"name = 'sshd.exe'\" | Where-Object { $_.CommandLine -match 'sshd:.*@' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"], { reject: false });
-            } else {
-              await execa('pkill', ['-f', 'sshd:.*@'], { reject: false });
+            await revokeUID(BROKER_URL, uid, sessionState.hostToken);
+            tunnelProcess.kill();
+            if (process.platform !== 'win32') {
               await execa('tmux', [...tmuxSocketArgs(), 'kill-server'], { reject: false });
               const legacySessions = await listTmuxSessions();
               for (const session of legacySessions) {
@@ -1094,7 +1141,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
                 }
               }
             }
-            spinner.succeed('All client SSH sessions terminated');
+            spinner.succeed('Session revoked and iPingYou-owned connections terminated');
             logSessionEvent('host_sessions_terminated');
           } catch {
             spinner.warn('Could not terminate sessions (none active?)');
@@ -1271,13 +1318,13 @@ export async function startHostMode() {
     console.log(chalk.dim('  🔑 Generating ephemeral SSH key for passwordless entry...'));
     try {
       const ephemeralKey = await generateEphemeralKey();
-      const authKeysPath = await injectPublicKey(ephemeralKey.pubKey);
+      const { authKeysPath, authorizedKey } = await injectPublicKey(ephemeralKey.pubKey);
 
       serviceConfig.privateKey = ephemeralKey.privKey;
 
       addCleanupHook(async () => {
         console.log(chalk.dim('     Removing ephemeral public key...'));
-        await removePublicKey(authKeysPath, ephemeralKey.pubKey);
+        await removePublicKey(authKeysPath, authorizedKey);
         try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
         try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
       });

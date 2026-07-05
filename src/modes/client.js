@@ -26,7 +26,7 @@ import { calculateChecksum } from '../lib/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
 import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
 import { buildTmuxSessionName, TMUX_SOCKET_PATH } from '../lib/tmux.js';
-import open from 'open';
+import { openUrl } from '../lib/open-url.js';
 import { secureSensitiveUrl } from '../lib/secure-print.js';
 import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
 
@@ -479,7 +479,7 @@ export async function startClientMode(options = {}) {
     console.log('');
     logSessionEvent('client_http_mode', { uid: targetUid, port: payload.port || null });
     try {
-      await open(payload.url);
+      await openUrl(payload.url);
     } catch {
       console.log(chalk.dim(`  Could not auto-open. Please visit: ${payload.url}`));
     }
@@ -711,7 +711,7 @@ async function handleClientChat(uid, password, cachedChatUrl) {
     spinner.succeed('Chat Room found! Opening browser...');
     try {
       const fullUrl = `${chatUrl}#${password}`;
-      await open(fullUrl);
+      await openUrl(fullUrl);
     } catch {
       console.log(chalk.cyan(`  👉 Please open: ${secureSensitiveUrl(chatUrl, password)}`));
     }

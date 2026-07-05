@@ -8,16 +8,19 @@
  * ============================================================
  */
 
-import { customAlphabet } from 'nanoid';
+import crypto from 'node:crypto';
 
 // Use lowercase alphanumeric only — easy to share verbally
 const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
-const generate = customAlphabet(alphabet, 8);
 
 /**
  * Generate a random 8-character session UID.
  * @returns {string}
  */
 export function generateUID() {
-  return generate();
+  let uid = '';
+  for (let index = 0; index < 8; index += 1) {
+    uid += alphabet[crypto.randomInt(0, alphabet.length)];
+  }
+  return uid;
 }

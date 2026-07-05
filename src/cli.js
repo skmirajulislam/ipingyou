@@ -29,6 +29,7 @@ import { fileURLToPath } from 'node:url';
 import { detectOS, checkDependencies } from './lib/platform.js';
 import { cleanupAll, installShutdownHandlers, executePanicMode } from './lib/cleanup.js';
 import { cleanupSessionLog } from './lib/session-log.js';
+import { getSocketFirewallStatus, runProtectedNpmInstall } from './lib/socket-firewall.js';
 import { startHostMode } from './modes/host.js';
 import { startClientMode } from './modes/client.js';
 import { startAIMode } from './modes/ai.js';
@@ -330,10 +331,19 @@ program
 
 program
   .command('panic')
-  .description('🚨 Self-destruct mode: wipe all configs, kill tunnels, and remove traces')
+  .description('🚨 Stop resources owned by the current iPingYou session')
   .action(async () => {
     try {
       showBanner();
+      const { confirmation } = await inquirer.prompt([{
+        type: 'input',
+        name: 'confirmation',
+        message: 'Type STOP CURRENT SESSION to confirm:',
+      }]);
+      if (confirmation !== 'STOP CURRENT SESSION') {
+        console.log(chalk.yellow('  Emergency shutdown cancelled.'));
+        return;
+      }
       await executePanicMode();
     } catch (err) {
       fatal('panic', err);
@@ -352,8 +362,8 @@ program
       const { execa } = await import('execa');
       
       if (action === 'install') {
-        console.log(chalk.dim('  Installing PM2 globally and starting host...'));
-        await execa('npm', ['install', '-g', 'pm2'], { stdio: 'inherit' });
+        console.log(chalk.dim('  Scanning and installing PM2 through Socket Firewall...'));
+        await runProtectedNpmInstall(['-g', 'pm2'], { stdio: 'inherit' });
         await execa('pm2', ['start', 'ipingyou', '--name', 'ipingyou-host', '--', 'host'], { stdio: 'inherit' });
         await execa('pm2', ['save'], { stdio: 'inherit' });
         await execa('pm2', ['startup'], { stdio: 'inherit' });
@@ -370,6 +380,26 @@ program
       }
     } catch (err) {
       fatal('service', err);
+    }
+  });
+
+program
+  .command('security-status')
+  .description('Check Socket Firewall protection for future npm installations')
+  .action(async () => {
+    try {
+      showBanner();
+      const status = await getSocketFirewallStatus();
+      if (!status.available) {
+        console.log(chalk.yellow('  ⚠️  Socket Firewall is not available.'));
+        console.log(chalk.dim('     Install it with: npm install -g sfw'));
+        process.exitCode = 1;
+        return;
+      }
+      console.log(chalk.green(`  ✅ Socket Firewall active${status.version ? ` (${status.version})` : ''}`));
+      console.log(chalk.dim('     In-app npm installations are routed through: sfw npm install'));
+    } catch (err) {
+      fatal('security-status', err);
     }
   });
 

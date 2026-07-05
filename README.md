@@ -20,7 +20,7 @@ No firewalls to configure. No port forwarding. No plaintext leakage.
 * 📺 **Terminal Mirroring**: Wrap client SSH sessions in a multiplexed `tmux` terminal. The Host can spectate connected clients in real-time right from the dashboard to audit or assist.
 * 🔄 **Reverse Port Forwarding (`ssh -R`)**: Clients can expose their *local* `localhost` development ports back to the Host through the secure tunnel.
 * 📡 **Hardware Telemetry Verification**: Clients silently generate hardware footprint reports (OS, RAM, CPU, IP), encrypt them locally with the session password, and send them to the Host for authorization.
-* 🚨 **Panic Kill-Switch**: Type `ipingyou panic` to instantly vaporize all associated keys, wipe all alias configs, and send a `SIGKILL` to every active tunnel and SSH shell.
+* 🚨 **Scoped Emergency Stop**: Type `ipingyou panic` and confirm locally to stop only processes and temporary credentials owned by the current iPingYou session.
 * 👻 **Daemonization**: Run `ipingyou service install` to quietly install and run the Host listener in the background (survives system reboots using PM2).
 * 🧭 **Approval Gate**: Require the Host to explicitly approve clients before they receive tunnel/key material.
 * 📦 **One-Time File Share**: Serve a single file/folder over SCP and revoke after use.
@@ -48,12 +48,17 @@ npx @miraj181/ipingyou connect
 
 ### Global Install
 ```bash
-npm install -g @miraj181/ipingyou
+# Install Socket Firewall once, then scan iPingYou before installation
+npm install -g sfw
+sfw npm install -g @miraj181/ipingyou
 
 # Execute globally using aliases:
 ipingyou
 # or
 securelink
+
+# Verify future in-app npm installs are firewall-protected
+ipingyou security-status
 ```
 
 ---
@@ -102,7 +107,7 @@ sequenceDiagram
 
 ## 🛡️ Security Scanner Disclaimer
 
-Because **iPingYou** is a powerful remote administration tool with features like background daemonization (via PM2), secure shell execution (`execa`), and anti-forensics capabilities (`panic` mode), automated security scanners (such as Socket.dev or enterprise EDRs) may flag this package as a **potential risk** or **malware-like**. 
+Because **iPingYou** is a remote-access tool with background daemonization and SSH process management, automated security scanners may classify it as security-sensitive. Native dependencies are never downloaded or installed automatically, and emergency cleanup is limited to resources registered by the current process.
 
 These alerts (e.g., "AI-detected potential code anomaly", "Shell access", "Network access") are **expected behavior** for a peer-to-peer tunneling utility. The source code is entirely open-source, heavily documented, and uses zero-knowledge encryption to ensure your data is safe.
 
@@ -128,7 +133,7 @@ These alerts (e.g., "AI-detected potential code anomaly", "Shell access", "Netwo
 | `ipingyou connect -u <UID>` | Connect directly to a specific UID. |
 | `ipingyou ai` | Groq-powered task assistant with guarded local/remote tools. |
 | `ipingyou doctor` | Diagnostics for dependencies, SSH, broker, SCP, AI, and tests. |
-| `ipingyou panic` | 🚨 Self-destruct mode. Wipes configs, memory, and kills all processes. |
+| `ipingyou panic` | 🚨 Confirmed emergency stop for the current iPingYou session only. |
 | `ipingyou service install` | 👻 Installs Host mode as an always-on background daemon. |
 | `ipingyou service stop` | Stops and removes the background daemon. |
 | `ipingyou service status` | Shows background daemon status. |

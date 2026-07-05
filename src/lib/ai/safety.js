@@ -1,3 +1,5 @@
+import { getAllowlistRegexes } from '../allowlist.js';
+
 const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   /\b(gsk_[A-Za-z0-9_-]{20,})\b/g,
@@ -20,6 +22,31 @@ const BLOCKED_PATH_PATTERNS = [
   /id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/,
 ];
 
+const BLOCKED_PATH_SEGMENTS = new Set([
+  '.ssh',
+  '.gnupg',
+  '.aws',
+  '.ipingyou',
+  '.kube',
+  '.docker',
+]);
+
+const BLOCKED_PATH_BASENAMES = new Set([
+  '.npmrc',
+  '.netrc',
+  '.pypirc',
+  'credentials',
+  'credentials.json',
+  'known_hosts',
+  'authorized_keys',
+  'shadow',
+  'sudoers',
+]);
+
+const PRIVATE_KEY_BASENAME = /^id_(rsa|dsa|ecdsa|ed25519)(\.pub)?$/i;
+const ENV_BASENAME = /^\.env(?:\.|$)/i;
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/;
+
 const BLOCKED_COMMAND_PATTERNS = [
   /^\s*(env|printenv|set)\b/,
   /\b(export|declare)\s+-p\b/,
@@ -41,8 +68,7 @@ const DANGEROUS_COMMAND_PATTERNS = [
   /\b(curl|wget)\b/,
   />|>>|\btee\b/,
 ];
-
-import { getAllowlistRegexes } from '../allowlist.js';
+const SHELL_SYNTAX_PATTERN = /(?:[;&|`$()]|\\\r?\n)/;
 
 const READ_ONLY_COMMAND_PATTERNS = [
   /^\s*(pwd|ls|find|rg|grep|sed|cat|head|tail|wc|git status|git diff|git log|git show|node --version|npm --version|which|date|uname)\b/,
@@ -66,6 +92,33 @@ export function commandTouchesBlockedPath(command) {
   return BLOCKED_PATH_PATTERNS.some(pattern => pattern.test(command));
 }
 
+export function assertSafeReadablePath(filePath) {
+  const value = String(filePath ?? '');
+  if (!value || value.length > 4096) {
+    throw new Error('Invalid file path');
+  }
+  if (CONTROL_CHARACTERS.test(value)) {
+    throw new Error('File path contains control characters');
+  }
+
+  const normalized = value.replace(/\\/g, '/').replace(/\/+/g, '/');
+  const segments = normalized.toLowerCase().split('/').filter(Boolean);
+  const basename = segments.at(-1) || '';
+
+  if (
+    segments.some(segment => BLOCKED_PATH_SEGMENTS.has(segment))
+    || BLOCKED_PATH_BASENAMES.has(basename)
+    || PRIVATE_KEY_BASENAME.test(basename)
+    || ENV_BASENAME.test(basename)
+    || normalized.toLowerCase().includes('/.config/gh/')
+    || normalized.toLowerCase().includes('/proc/') && basename === 'environ'
+  ) {
+    throw new Error('Path references a protected secret/config location');
+  }
+
+  return value;
+}
+
 export function classifyCommand(command) {
   const text = String(command || '').trim();
   if (!text) return { blocked: true, needsApproval: true, reason: 'Empty command' };
@@ -78,16 +131,6 @@ export function classifyCommand(command) {
     };
   }
 
-  // Check user-provided allowlist first (if present)
-  try {
-    const userPatterns = getAllowlistRegexes();
-    if (Array.isArray(userPatterns) && userPatterns.some(p => p.test(text))) {
-      return { blocked: false, needsApproval: false, reason: 'Matched user allowlist' };
-    }
-  } catch {
-    // ignore allowlist errors and fall back to defaults
-  }
-
   if (BLOCKED_COMMAND_PATTERNS.some(pattern => pattern.test(text))) {
     return {
       blocked: true,
@@ -98,6 +141,20 @@ export function classifyCommand(command) {
 
   if (DANGEROUS_COMMAND_PATTERNS.some(pattern => pattern.test(text))) {
     return { blocked: false, needsApproval: true, reason: 'Command may modify files, install packages, or access the network' };
+  }
+
+  if (SHELL_SYNTAX_PATTERN.test(text)) {
+    return { blocked: false, needsApproval: true, reason: 'Command uses shell syntax and requires explicit approval' };
+  }
+
+  // User allowlists may suppress prompts only after non-bypassable safety checks.
+  try {
+    const userPatterns = getAllowlistRegexes();
+    if (Array.isArray(userPatterns) && userPatterns.some(pattern => pattern.test(text))) {
+      return { blocked: false, needsApproval: false, reason: 'Matched user allowlist' };
+    }
+  } catch {
+    // Ignore allowlist errors and fall back to defaults.
   }
 
   if (READ_ONLY_COMMAND_PATTERNS.some(pattern => pattern.test(text))) {

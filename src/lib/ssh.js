@@ -36,7 +36,13 @@ export function formatRemoteCd(remotePath) {
 export function formatScpRemotePath(remotePath) {
   const trimmed = String(remotePath || '').trim();
   if (!trimmed || trimmed === '~') return trimmed || '~';
-  return trimmed;
+  if (/[\u0000\r\n]/.test(trimmed) || trimmed.length > 4096) {
+    throw new Error('Invalid remote path');
+  }
+  if (trimmed.startsWith('~/')) {
+    return `~/${quoteRemoteShell(trimmed.slice(2))}`;
+  }
+  return quoteRemoteShell(trimmed);
 }
 
 export function getSshControlOptions(hostname) {

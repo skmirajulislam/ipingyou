@@ -3,7 +3,6 @@
  */
 
 import { execa } from 'execa';
-import { parse as shellParse } from 'shell-quote';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import fs from 'node:fs';
@@ -11,13 +10,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { getAlias } from '../lib/config.js';
 import { resolveUID } from '../lib/broker.js';
-import { buildSshArgs, extractHostname } from '../lib/ssh.js';
+import { buildSshArgs, extractHostname, quoteRemoteShell } from '../lib/ssh.js';
 import { addCleanupHook, cleanupAll } from '../lib/cleanup.js';
 import { startHostMode } from './host.js';
 import { startClientMode } from './client.js';
 import { performSCPNonInteractive } from './client.js';
 import { DEFAULT_AI_MODEL, createGroqChatCompletion, getGroqApiKey, getRateLimitWarnings, listGroqModels, estimateTokensForMessages } from '../lib/ai/groq.js';
-import { classifyCommand, redactSensitive, sanitizeUserTask, truncateForModel } from '../lib/ai/safety.js';
+import { assertSafeReadablePath, classifyCommand, redactSensitive, sanitizeUserTask, truncateForModel } from '../lib/ai/safety.js';
 import { recordEvent } from '../lib/session-log.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -139,13 +138,8 @@ async function confirmCommand(scope, command, reason, classification) {
     return false;
   }
 
-  if (!classification.needsApproval) {
-    console.log(chalk.dim(`  AI tool: ${scope} $ ${command}`));
-    return true;
-  }
-
   console.log('');
-  console.log(chalk.yellow('  AI wants to run a command that needs approval:'));
+  console.log(chalk.yellow('  AI wants to run a command:'));
   console.log(chalk.dim(`  Scope:  ${scope}`));
   console.log(chalk.dim(`  Reason: ${reason || classification.reason}`));
   console.log(chalk.cyan(`  ${command}`));
@@ -160,13 +154,27 @@ async function confirmCommand(scope, command, reason, classification) {
   return allow;
 }
 
+async function confirmFileRead(scope, filePath) {
+  console.log('');
+  console.log(chalk.yellow('  AI wants to read a text file and send redacted content to Groq:'));
+  console.log(chalk.dim(`  Scope: ${scope}`));
+  console.log(chalk.cyan(`  ${filePath}`));
+  const { allow } = await inquirer.prompt([{
+    type: 'confirm',
+    name: 'allow',
+    message: 'Allow this file read?',
+    default: false,
+  }]);
+  return allow;
+}
+
 function matchAppAction(task) {
   const lowered = String(task || '').toLowerCase();
   if (/\b(panic|self[- ]?destruct|wipe traces)\b/i.test(lowered)) {
     return {
       id: 'panic_blocked',
-      label: 'Panic mode',
-      description: 'Panic mode is intentionally not launched from AI mode. Run `ipingyou panic` directly if you mean it.',
+      label: 'Emergency shutdown',
+      description: 'Emergency shutdown is never launched from AI mode. Run `ipingyou panic` directly and confirm it locally.',
       blocked: true,
     };
   }
@@ -211,9 +219,7 @@ function showRateLimitWarnings(rateLimit) {
 }
 
 async function runLocalCommand(command) {
-  const parsed = shellParse(command);
-  // Filter out non-string tokens (shell operators like |, &&, ; etc.) to prevent injection
-  const args = parsed.filter(token => typeof token === 'string');
+  const args = parseLocalCommand(command);
   if (args.length === 0) {
     return { exitCode: 1, stdout: '', stderr: 'Empty or unsafe command after parsing' };
   }
@@ -228,6 +234,57 @@ async function runLocalCommand(command) {
     stdout: redactSensitive(result.stdout || ''),
     stderr: redactSensitive(result.stderr || ''),
   };
+}
+
+export function parseLocalCommand(command) {
+  const input = String(command || '');
+  if (!input || input.length > 8192 || /[\u0000\r\n]/.test(input)) {
+    throw new Error('Command is empty, too long, or contains control characters');
+  }
+
+  const args = [];
+  let current = '';
+  let quote = null;
+  let tokenStarted = false;
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index];
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else if (char === '\\' && quote === '"' && index + 1 < input.length) {
+        current += input[++index];
+      } else {
+        current += char;
+      }
+      tokenStarted = true;
+      continue;
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char;
+      tokenStarted = true;
+    } else if (/\s/.test(char)) {
+      if (tokenStarted) {
+        args.push(current);
+        current = '';
+        tokenStarted = false;
+      }
+    } else if (char === '\\') {
+      if (index + 1 >= input.length) throw new Error('Command ends with an incomplete escape');
+      current += input[++index];
+      tokenStarted = true;
+    } else if (/[;&|`$()<>]/.test(char)) {
+      throw new Error('Local AI commands do not support shell operators');
+    } else {
+      current += char;
+      tokenStarted = true;
+    }
+  }
+
+  if (quote) throw new Error('Command contains an unterminated quote');
+  if (tokenStarted) args.push(current);
+  return args;
 }
 
 async function runRemoteCommand(context, command) {
@@ -246,24 +303,34 @@ async function runRemoteCommand(context, command) {
   };
 }
 
-function assertReadablePath(filePath) {
-  const classification = classifyCommand(`cat ${filePath}`);
-  if (classification.blocked) {
-    throw new Error(classification.reason);
-  }
-}
-
 async function readLocalTextFile(filePath) {
-  assertReadablePath(filePath);
-  const stat = fs.statSync(filePath);
+  const requestedPath = assertSafeReadablePath(filePath);
+  const expandedPath = requestedPath === '~'
+    ? os.homedir()
+    : requestedPath.replace(/^~(?=[/\\])/, os.homedir());
+  const resolvedPath = fs.realpathSync(path.resolve(expandedPath));
+  assertSafeReadablePath(resolvedPath);
+  const stat = fs.statSync(resolvedPath);
   if (!stat.isFile()) throw new Error('Path is not a file');
   if (stat.size > 256 * 1024) throw new Error('File is too large for AI mode; use a targeted command instead');
-  return redactSensitive(fs.readFileSync(filePath, 'utf8'));
+  return redactSensitive(fs.readFileSync(resolvedPath, 'utf8'));
 }
 
 async function readRemoteTextFile(context, filePath) {
-  assertReadablePath(filePath);
-  return runRemoteCommand(context, `python3 - <<'PY'\nfrom pathlib import Path\np=Path(${JSON.stringify(filePath)})\nif not p.is_file(): raise SystemExit('Path is not a file')\nif p.stat().st_size > 262144: raise SystemExit('File is too large for AI mode')\nprint(p.read_text(errors='replace'), end='')\nPY`);
+  const safePath = assertSafeReadablePath(filePath);
+  const script = [
+    'import pathlib, sys',
+    'p = pathlib.Path(sys.argv[1]).expanduser().resolve()',
+    'parts = {part.lower() for part in p.parts}',
+    "blocked = {'.ssh','.gnupg','.aws','.ipingyou','.kube','.docker'}",
+    "name = p.name.lower()",
+    "if parts & blocked or name in {'.npmrc','.netrc','.pypirc','credentials','credentials.json','known_hosts','authorized_keys','shadow','sudoers'} or name.startswith('.env') or name in {'id_rsa','id_dsa','id_ecdsa','id_ed25519'}: raise SystemExit('Protected path')",
+    "if not p.is_file(): raise SystemExit('Path is not a file')",
+    "if p.stat().st_size > 262144: raise SystemExit('File is too large for AI mode')",
+    "sys.stdout.write(p.read_text(errors='replace'))",
+  ].join('\n');
+  const command = `python3 -c ${quoteRemoteShell(script)} -- ${quoteRemoteShell(safePath)}`;
+  return runRemoteCommand(context, command);
 }
 
 async function setupRemoteContext() {
@@ -391,6 +458,15 @@ async function executeToolCall(context, call) {
   if (name === 'read_text_file') {
     const filePath = String(args.filePath || '').trim();
     if (!filePath) return buildToolResult({ ok: false, error: 'Missing filePath' });
+    try {
+      assertSafeReadablePath(filePath);
+    } catch (err) {
+      return buildToolResult({ ok: false, blocked: true, error: err.message });
+    }
+    if (!await confirmFileRead(context.scope, filePath)) {
+      return buildToolResult({ ok: false, blocked: true, error: 'User denied file access' });
+    }
+    recordEvent('ai_file_read_approved', { scope: context.scope });
 
     if (context.scope === 'remote') {
       const result = await readRemoteTextFile(context, filePath);

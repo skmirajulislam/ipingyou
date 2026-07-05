@@ -3,18 +3,13 @@
  *  Graceful Cleanup & Process Killer
  * ============================================================
  *  Tracks all spawned child processes (cloudflared, ssh, etc.)
- *  and kills them on SIGINT/exit using tree-kill to ensure
+ *  and kills them on SIGINT/exit to ensure
  *  no orphan processes linger.
  * ============================================================
  */
 
-import treeKill from 'tree-kill';
 import chalk from 'chalk';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import { execa } from 'execa';
-import { TMUX_SESSION_NAME, TMUX_SESSION_PREFIX, tmuxSocketArgs } from './tmux.js';
 
 /** @type {Set<number>} — Active child PIDs we manage */
 const trackedPIDs = new Set();
@@ -74,15 +69,61 @@ export function setRevokeOnExit(uid, brokerUrl, getHostToken = null) {
  * @returns {Promise<void>}
  */
 export function killProcessTree(pid, signal = 'SIGTERM') {
-  return new Promise((resolve) => {
-    treeKill(pid, signal, (err) => {
-      if (err) {
-        treeKill(pid, 'SIGKILL', () => resolve());
-      } else {
-        resolve();
-      }
+  return killProcessTreeSafely(pid, signal);
+}
+
+async function killProcessTreeSafely(pid, signal) {
+  const rootPid = Number.parseInt(pid, 10);
+  if (!Number.isSafeInteger(rootPid) || rootPid <= 0 || rootPid === process.pid) {
+    throw new Error('Invalid child process PID');
+  }
+
+  if (process.platform === 'win32') {
+    await execa('taskkill', ['/PID', String(rootPid), '/T', '/F'], {
+      reject: false,
+      timeout: 5000,
+      maxBuffer: 64 * 1024,
     });
-  });
+    return;
+  }
+
+  const descendants = [];
+  const visited = new Set([rootPid]);
+  const pending = [rootPid];
+  while (pending.length > 0 && visited.size <= 1024) {
+    const parentPid = pending.pop();
+    const result = await execa('pgrep', ['-P', String(parentPid)], {
+      reject: false,
+      timeout: 2000,
+      maxBuffer: 64 * 1024,
+    }).catch(() => ({ stdout: '' }));
+    for (const value of String(result.stdout || '').split(/\s+/)) {
+      const childPid = Number.parseInt(value, 10);
+      if (!Number.isSafeInteger(childPid) || childPid <= 0 || visited.has(childPid)) continue;
+      visited.add(childPid);
+      descendants.push(childPid);
+      pending.push(childPid);
+    }
+  }
+
+  const targets = [...descendants.reverse(), rootPid];
+  for (const targetPid of targets) {
+    try {
+      process.kill(targetPid, signal);
+    } catch (err) {
+      if (err.code !== 'ESRCH') throw err;
+    }
+  }
+
+  await new Promise(resolve => setTimeout(resolve, 300));
+  for (const targetPid of targets) {
+    try {
+      process.kill(targetPid, 0);
+      process.kill(targetPid, 'SIGKILL');
+    } catch (err) {
+      if (err.code !== 'ESRCH') throw err;
+    }
+  }
 }
 
 /**
@@ -174,85 +215,11 @@ export function installShutdownHandlers() {
 }
 
 /**
- * Get count of tracked PIDs.
- * @returns {number}
- */
-/**
- * Execute Panic Mode (Self-Destruct)
- * Wipes all configs, keys, and forcefully kills associated processes.
+ * Execute a scoped emergency shutdown.
+ * Only resources registered by this process are touched.
  */
 export async function executePanicMode() {
-  console.log(chalk.bold.red('\n  🚨 INITIATING SECURELINK PANIC MODE 🚨\n'));
-  
-  // 1. Force kill all cloudflared & ipingyou processes
-  console.log(chalk.dim('  [1/4] Terminating all tunnel and host processes...'));
-  try {
-    if (process.platform === 'win32') {
-      // taskkill expects a command string on Windows; pass args safely
-      await execa('taskkill', ['/F', '/IM', 'cloudflared.exe'], { reject: false });
-    } else {
-      // Use argument arrays to avoid shell interpolation
-      await execa('pkill', ['-9', '-f', 'cloudflared'], { reject: false });
-      await execa('pkill', ['-9', '-f', 'sshd:.*@'], { reject: false });
-
-      const socketArgs = Array.isArray(tmuxSocketArgs) ? tmuxSocketArgs() : [];
-      // Ensure socketArgs are strings and safe-ish before passing to execa
-      const safeSocketArgs = (socketArgs || []).map(a => String(a));
-      await execa('tmux', [...safeSocketArgs, 'kill-server'], { reject: false });
-
-      const { stdout } = await execa('tmux', ['list-sessions', '-F', '#{session_name}'], { reject: false });
-      const legacyNames = stdout
-        .split(/\r?\n/)
-        .filter(Boolean)
-        .filter(name => name === TMUX_SESSION_NAME || name.startsWith(TMUX_SESSION_PREFIX));
-      for (const name of legacyNames) {
-        await execa('tmux', ['kill-session', '-t', name], { reject: false });
-      }
-    }
-  } catch (err) {
-    // Best-effort cleanup; log debug info without exposing stack in normal flow
-    // (keep behavior unchanged otherwise)
-  }
-
-  // 2. Delete configuration and aliases
-  console.log(chalk.dim('  [2/4] Wiping configuration files...'));
-  const configPath = path.join(os.homedir(), '.ipingyou', 'config.json');
-  try {
-    if (fs.existsSync(configPath)) {
-      fs.unlinkSync(configPath);
-    }
-    const configDir = path.join(os.homedir(), '.ipingyou');
-    if (fs.existsSync(configDir)) {
-      fs.rmSync(configDir, { recursive: true, force: true });
-    }
-  } catch {}
-
-  // 3. Delete ephemeral keys and temp files
-  console.log(chalk.dim('  [3/4] Purging ephemeral keys and temporary files...'));
-  try {
-    const tmpDir = os.tmpdir();
-    const files = fs.readdirSync(tmpDir);
-    for (const file of files) {
-      if (file.startsWith('ipingyou_') || file.startsWith('ipingyou-')) {
-        fs.unlinkSync(path.join(tmpDir, file));
-      }
-    }
-  } catch {}
-
-  console.log(chalk.dim('  [4/4] Scrubbing injected SSH keys...'));
-  try {
-    const authKeysPath = path.join(os.homedir(), '.ssh', 'authorized_keys');
-    if (fs.existsSync(authKeysPath)) {
-      const current = fs.readFileSync(authKeysPath, 'utf8');
-      const cleaned = current
-        .split(/\r?\n/)
-        .filter(line => !line.includes('ipingyou-ephemeral'))
-        .join('\n')
-        .replace(/\n{3,}/g, '\n\n');
-      if (cleaned !== current) fs.writeFileSync(authKeysPath, cleaned);
-    }
-  } catch {}
-
-  console.log(chalk.bold.green('\n  ✅ Panic Mode Complete. All traces removed.\n'));
-  process.exit(0);
+  console.log(chalk.bold.red('\n  🚨 INITIATING SCOPED EMERGENCY SHUTDOWN 🚨\n'));
+  await cleanupAll();
+  console.log(chalk.bold.green('  ✅ Current iPingYou session stopped safely.\n'));
 }

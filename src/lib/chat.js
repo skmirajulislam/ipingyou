@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
-import open from 'open';
+import { openUrl } from './open-url.js';
 import chalk from 'chalk';
 import { secureSensitiveUrl } from './secure-print.js';
 
@@ -97,9 +97,17 @@ const HTML_CONTENT = `
     let username = isHost ? 'Host' : prompt('Enter your name for the chat:', 'Client_' + Math.floor(Math.random()*1000));
     if (!username) username = 'Anonymous';
 
+    function showBodyMessage(text, color) {
+      const message = document.createElement('h2');
+      message.style.cssText = 'text-align:center;margin-top:20vh';
+      if (color) message.style.color = color;
+      message.textContent = text;
+      document.body.replaceChildren(message);
+    }
+
     const sessionPassword = window.location.hash.substring(1);
     if (!sessionPassword) {
-      document.body.innerHTML = '<h2 style="text-align:center; margin-top:20vh; color:red;">Fatal: Missing session password in URL hash. Cannot decrypt E2E chat.</h2>';
+      showBodyMessage('Fatal: Missing session password in URL hash. Cannot decrypt E2E chat.', 'red');
       throw new Error("Missing password");
     }
 
@@ -181,7 +189,7 @@ const HTML_CONTENT = `
     }
 
     function updateUsers(users) {
-      usersList.innerHTML = '';
+      usersList.replaceChildren();
       users.forEach(u => {
         const li = document.createElement('li');
         li.className = 'user-item';
@@ -252,7 +260,7 @@ const HTML_CONTENT = `
       } else {
         ws.close();
         window.close();
-        document.body.innerHTML = '<h2 style="text-align:center; margin-top:20vh;">You have left the chat. You can close this tab.</h2>';
+        showBodyMessage('You have left the chat. You can close this tab.');
       }
     };
   </script>
@@ -327,7 +335,7 @@ export async function startChatServer(onClose) {
 export async function openLocalChatUI(port, password) {
   try {
     const chatUrl = `http://localhost:${port}#${password}`;
-    await open(chatUrl);
+    await openUrl(chatUrl);
   } catch {
     console.log(chalk.dim(`     Unable to auto-open browser. Visit ${secureSensitiveUrl(`http://localhost:${port}`, password)}`));
   }
