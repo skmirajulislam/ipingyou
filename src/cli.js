@@ -30,10 +30,6 @@ import { detectOS, checkDependencies } from './lib/services/platform.js';
 import { cleanupAll, installShutdownHandlers, executePanicMode } from './lib/mod/cleanup.js';
 import { cleanupSessionLog } from './lib/mod/session-log.js';
 import { getSocketFirewallStatus, runProtectedNpmInstall } from './lib/mod/socket-firewall.js';
-import { startHostMode } from './modes/host.js';
-import { startClientMode } from './modes/client.js';
-import { startAIMode } from './modes/ai.js';
-import { startDoctorMode } from './modes/doctor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
@@ -226,18 +222,26 @@ async function interactiveMode() {
   ]);
 
   switch (mode) {
-    case 'host':
+    case 'host': {
+      const { startHostMode } = await import('./modes/host.js');
       await startHostMode();
       break;
-    case 'client':
+    }
+    case 'client': {
+      const { startClientMode } = await import('./modes/client.js');
       await startClientMode();
       break;
-    case 'ai':
+    }
+    case 'ai': {
+      const { startAIMode } = await import('./modes/ai.js');
       await startAIMode();
       break;
-    case 'doctor':
+    }
+    case 'doctor': {
+      const { startDoctorMode } = await import('./modes/doctor.js');
       await startDoctorMode();
       break;
+    }
     case 'help':
       showRichHelp();
       break;
@@ -270,6 +274,7 @@ program
       showSystemInfo();
       installShutdownHandlers();
       await checkDependencies();
+      const { startHostMode } = await import('./modes/host.js');
       await startHostMode();
     } catch (err) {
       fatal('host', err);
@@ -289,6 +294,7 @@ program
       showSystemInfo();
       installShutdownHandlers();
       await checkDependencies();
+      const { startClientMode } = await import('./modes/client.js');
       await startClientMode({ uid: commandOptions.uid });
     } catch (err) {
       fatal('connect', err);
@@ -306,6 +312,7 @@ program
       showBanner();
       showSystemInfo();
       installShutdownHandlers();
+      const { startAIMode } = await import('./modes/ai.js');
       await startAIMode();
     } catch (err) {
       fatal('ai', err);
@@ -323,6 +330,7 @@ program
 
       showBanner();
       showSystemInfo();
+      const { startDoctorMode } = await import('./modes/doctor.js');
       await startDoctorMode({ full: commandOptions.full });
     } catch (err) {
       fatal('doctor', err);

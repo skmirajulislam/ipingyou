@@ -200,7 +200,7 @@ async function viewLiveClientLogs(sharedDropPath) {
         if (stats.size > filePosition) {
           const fd = fs.openSync(logFilePath, 'r');
           const bufferSize = stats.size - filePosition;
-          const buffer = Buffer.alloc(bufferSize);
+          const buffer = Buffer.allocUnsafe(bufferSize);
           fs.readSync(fd, buffer, 0, bufferSize, filePosition);
           fs.closeSync(fd);
 
@@ -229,6 +229,71 @@ async function viewLiveClientLogs(sharedDropPath) {
     console.log(chalk.red(`  Could not read client logs: ${err.message}`));
   }
 }
+
+async function viewHostLiveLogs() {
+  const logFilePath = getSessionLogPath();
+  if (!logFilePath || !fs.existsSync(logFilePath)) {
+    console.log(chalk.red("  ❌ Error: Host session log is not active or doesn't exist yet."));
+    return;
+  }
+
+  console.log('');
+  console.log(chalk.bold.cyan(`  📊 Live Monitor: Host Session Activity`));
+  console.log(chalk.dim('  ──────────────────────────────────────────────────'));
+  console.log(chalk.dim('  Showing log stream. Press Enter to exit.'));
+  console.log('');
+
+  let filePosition = 0;
+  let keepWatching = true;
+
+  try {
+    const stats = fs.statSync(logFilePath);
+    filePosition = stats.size;
+    const content = fs.readFileSync(logFilePath, 'utf8');
+    const lines = content.split('\n').filter(Boolean);
+    const lastLines = lines.slice(-10);
+    for (const line of lastLines) {
+      formatAndPrintLogLine(line);
+    }
+
+    const intervalId = setInterval(() => {
+      if (!keepWatching) return;
+      try {
+        if (!fs.existsSync(logFilePath)) return;
+        const stats = fs.statSync(logFilePath);
+        if (stats.size > filePosition) {
+          const fd = fs.openSync(logFilePath, 'r');
+          const bufferSize = stats.size - filePosition;
+          const buffer = Buffer.allocUnsafe(bufferSize);
+          fs.readSync(fd, buffer, 0, bufferSize, filePosition);
+          fs.closeSync(fd);
+
+          filePosition = stats.size;
+          const newContent = buffer.toString('utf8');
+          const lines = newContent.split('\n').filter(Boolean);
+          for (const line of lines) {
+            formatAndPrintLogLine(line);
+          }
+        }
+      } catch {
+        // Ignore file access errors
+      }
+    }, 1000);
+
+    await inquirer.prompt([{
+      type: 'input',
+      name: 'exit',
+      message: 'Press Enter to stop monitoring...'
+    }]);
+
+    keepWatching = false;
+    clearInterval(intervalId);
+    console.log(chalk.cyan('  Stopped monitoring host logs.'));
+  } catch (err) {
+    console.log(chalk.red(`  Could not read host logs: ${err.message}`));
+  }
+}
+
 
 // ─── Ephemeral SSH Key Management ────────────────────────────
 async function generateEphemeralKey() {
@@ -1032,6 +1097,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
         { name: '✅ Review pending client approvals', value: 'approvals' },
         { name: '📡 See detailed client telemetry', value: 'show' },
         { name: '📄 View live client activity logs', value: 'logs' },
+        { name: '📄 View host session activity logs', value: 'host_logs' },
         { name: '🔄 Re-register with broker', value: 'reregister' }
       ];
 
@@ -1138,6 +1204,14 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
             }
           });
 
+          addCleanupHook(() => {
+            try {
+              if (chatServerInstance && chatServerInstance.server) {
+                chatServerInstance.server.close();
+              }
+            } catch {}
+          });
+
           console.log(chalk.dim('  Provisioning Cloudflare tunnel for chat...'));
           chatTunnelProcess = await spawnTunnelSupervised(`http://localhost:${chatServerInstance.port}`, async (newUrl) => {
             serviceConfig.chatUrl = newUrl;
@@ -1156,6 +1230,9 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
         case 'dashboard': {
           dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig, sessionState);
+          addCleanupHook(() => {
+            try { if (dashboardInstance) dashboardInstance.close(); } catch {}
+          });
           logSessionEvent('host_dashboard_opened');
           return waitForAction();
         }
@@ -1174,6 +1251,10 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
         case 'logs': {
           await viewLiveClientLogs(serviceConfig.sharedDropPath);
+          return waitForAction();
+        }
+        case 'host_logs': {
+          await viewHostLiveLogs();
           return waitForAction();
         }
 
@@ -1241,6 +1322,9 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
         case 'exit':
           if (dashboardInstance) dashboardInstance.close();
+          if (chatServerInstance && chatServerInstance.server) {
+            try { chatServerInstance.server.close(); } catch {}
+          }
           if (chatTunnelProcess) chatTunnelProcess.kill();
           if (global.privateBrokerInstance) global.privateBrokerInstance.kill();
           if (tunnelProcess) tunnelProcess.kill();

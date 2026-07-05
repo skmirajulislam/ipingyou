@@ -54,8 +54,9 @@ function downloadUrlToPath(url, dest) {
     const file = fs.createWriteStream(dest);
     const request = https.get(url, (response) => {
       if (response.statusCode === 301 || response.statusCode === 302) {
-        file.close();
-        downloadUrlToPath(response.headers.location, dest).then(resolve).catch(reject);
+        file.close(() => {
+          downloadUrlToPath(response.headers.location, dest).then(resolve).catch(reject);
+        });
         return;
       }
       if (response.statusCode !== 200) {

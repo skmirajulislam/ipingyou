@@ -11,7 +11,7 @@ import path from 'node:path';
 import { getAlias } from '../lib/mod/config.js';
 import { resolveUID } from '../lib/client/broker.js';
 import { buildSshArgs, extractHostname, quoteRemoteShell } from '../lib/services/ssh.js';
-import { addCleanupHook, cleanupAll } from '../lib/mod/cleanup.js';
+import { addCleanupHook, cleanupAll, trackPID, untrackPID } from '../lib/mod/cleanup.js';
 import { startHostMode } from './host.js';
 import { startClientMode } from './client.js';
 import { performSCPNonInteractive } from './client.js';
@@ -223,11 +223,14 @@ async function runLocalCommand(command) {
   if (args.length === 0) {
     return { exitCode: 1, stdout: '', stderr: 'Empty or unsafe command after parsing' };
   }
-  const result = await execa(args[0], args.slice(1), {
+  const child = execa(args[0], args.slice(1), {
     reject: false,
     timeout: 30000,
     maxBuffer: 1024 * 1024,
   });
+  trackPID(child.pid);
+  const result = await child;
+  untrackPID(child.pid);
 
   return {
     exitCode: result.exitCode,
@@ -290,11 +293,14 @@ export function parseLocalCommand(command) {
 async function runRemoteCommand(context, command) {
   const sshArgs = buildSshArgs(context.hostname, context.privateKeyPath);
   sshArgs.push(`${context.username}@${context.hostname}`, command);
-  const result = await execa('ssh', sshArgs, {
+  const child = execa('ssh', sshArgs, {
     reject: false,
     timeout: 30000,
     maxBuffer: 1024 * 1024,
   });
+  trackPID(child.pid);
+  const result = await child;
+  untrackPID(child.pid);
 
   return {
     exitCode: result.exitCode,
@@ -670,7 +676,10 @@ async function tryAITransfer(task, context) {
     }
 
     try {
-      const result = await execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+      const child = execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+      trackPID(child.pid);
+      const result = await child;
+      untrackPID(child.pid);
       if (result.exitCode === 0) {
         console.log(chalk.green('  ✅ Transfer completed via active remote session.'));
         recordEvent('ai_transfer_success', { direction, localPath, remotePath, hostname: context.hostname, reusedContext: true });

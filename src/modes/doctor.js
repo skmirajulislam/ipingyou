@@ -231,7 +231,6 @@ export async function startDoctorMode(options = {}) {
   await check('scp client', () => commandFound('scp'));
   await check('ssh-keygen', () => commandFound('ssh-keygen'));
   await check('cloudflared', () => commandVersion('cloudflared', ['--version']));
-  await check('tmux', () => commandVersion('tmux', ['-V']));
 
   console.log(chalk.bold('\n  Host readiness'));
   await check('SSH service', checkSshService);

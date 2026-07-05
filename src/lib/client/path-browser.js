@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { buildSshArgs, formatRemoteCd } from '../services/ssh.js';
+import { trackPID, untrackPID } from '../mod/cleanup.js';
 
 class RemoteDirectoryError extends Error {
   constructor(message, remoteDir, stderr = '') {
@@ -116,10 +117,13 @@ async function listRemoteDirectory(username, hostname, privateKeyPath, remoteDir
   const sshArgs = buildSshArgs(hostname, privateKeyPath, [], { persistKnownHosts });
   sshArgs.push(`${username}@${hostname}`, command);
 
-  const result = await execa('ssh', sshArgs, {
+  const child = execa('ssh', sshArgs, {
     stdio: ['inherit', 'pipe', 'pipe'],
     reject: false,
   });
+  trackPID(child.pid);
+  const result = await child;
+  untrackPID(child.pid);
 
   if (result.exitCode !== 0) {
     const detail = result.stderr.trim() || `ssh exited with code ${result.exitCode}`;

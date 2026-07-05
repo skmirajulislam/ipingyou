@@ -34,12 +34,16 @@ let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
 function startLiveLogSync(username, hostname, privateKeyPath, remoteDropPath, localLogPath, persistKnownHosts = true) {
   if (!remoteDropPath || !localLogPath) return;
 
-  let lastContent = '';
+  let lastSize = -1;
+  let lastMtime = 0;
+  let isSyncing = false;
   const interval = setInterval(async () => {
+    if (isSyncing) return;
+    isSyncing = true;
     try {
       if (!fs.existsSync(localLogPath)) return;
-      const content = fs.readFileSync(localLogPath, 'utf8');
-      if (content === lastContent) return;
+      const stats = fs.statSync(localLogPath);
+      if (stats.size === lastSize && stats.mtimeMs === lastMtime) return;
 
       const scpArgs = [
         '-O',
@@ -59,10 +63,13 @@ function startLiveLogSync(username, hostname, privateKeyPath, remoteDropPath, lo
 
       const result = await execa('scp', scpArgs, { reject: false });
       if (result.exitCode === 0) {
-        lastContent = content;
+        lastSize = stats.size;
+        lastMtime = stats.mtimeMs;
       }
     } catch {
       // Ignore background sync failures silently
+    } finally {
+      isSyncing = false;
     }
   }, 3000);
 
@@ -332,7 +339,10 @@ async function downloadSpecificRemotePath(username, hostname, privateKeyPath, re
   ];
   if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
   scpArgs.push(`${username}@${hostname}:${formatScpRemotePath(remotePath)}`, localPath);
-  const result = await execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+  const child = execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+  trackPID(child.pid);
+  const result = await child;
+  untrackPID(child.pid);
   return result.exitCode === 0;
 }
 
@@ -747,7 +757,10 @@ export async function performSCPNonInteractive(params = {}) {
   }
 
   try {
-    const result = await execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+    const child = execa('scp', scpArgs, { stdio: 'inherit', reject: false });
+    trackPID(child.pid);
+    const result = await child;
+    untrackPID(child.pid);
     if (result.exitCode === 0) {
       recordEvent('scp_transfer_success', { direction, localPath, remotePath, hostname, automated: true });
       return true;
