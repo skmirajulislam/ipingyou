@@ -435,8 +435,11 @@ app.get('/approval-requests/:uid', hostLimiter, (req, res) => {
   if (!entry) return res.status(404).json({ error: 'UID not found' });
   // Require host token to view approval list
   if (!requireHostToken(req, res, entry)) return;
-  // Strip encrypted payloads — host dashboard only needs id/status/timestamps
-  const sanitized = entry.approvals.map(a => ({ id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt }));
+  // Include encrypted payloads so the host can decrypt client details locally
+  const sanitized = entry.approvals.map(a => ({
+    id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt,
+    iv: a.iv, ciphertext: a.ciphertext, salt: a.salt,
+  }));
   res.json({ approvalRequired: entry.approvalRequired, approvals: sanitized });
 });
 

@@ -264,7 +264,7 @@ export async function pushTelemetry(brokerUrl, uid, password, username, action =
       os: `${os.type()} ${os.release()} (${os.arch()})`,
       // Limit fingerprint detail to reduce privacy surface
       cpu: os.cpus()[0]?.model ? os.cpus()[0].model.replace(/\s{2,}/g, ' ').trim() : 'Unknown',
-      ramGB: Math.round(os.totalmem() / 1024 / 1024 / 1024),
+      ram: Math.round(os.totalmem() / 1024 / 1024 / 1024) + ' GB',
       action,
       time: new Date().toISOString()
     };

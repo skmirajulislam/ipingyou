@@ -54,6 +54,15 @@ async function writeEphemeralPrivateKey(privateKey) {
   const keyPath = path.join(os.tmpdir(), `ipingyou_client_${Date.now()}`);
   fs.writeFileSync(keyPath, normalizePrivateKey(privateKey), { mode: 0o600 });
 
+  // On Windows, NTFS ignores POSIX mode bits — fix ACLs with icacls
+  if (process.platform === 'win32') {
+    const currentUser = os.userInfo().username;
+    // Remove all inherited permissions first
+    await execa('icacls', [keyPath, '/inheritance:r'], { reject: false });
+    // Grant only the current user full control
+    await execa('icacls', [keyPath, '/grant:r', `${currentUser}:(F)`], { reject: false });
+  }
+
   const result = await execa('ssh-keygen', ['-y', '-f', keyPath], {
     reject: false,
     stdio: ['ignore', 'pipe', 'pipe'],

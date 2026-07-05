@@ -38,6 +38,8 @@ const password = 'test-password';
 const encrypted = encrypt(tunnelUrl, password);
 const uid = 'test' + Date.now().toString(36).slice(-4);
 
+let hostToken = null;
+
 await test(`Register encrypted payload (UID: ${uid})`, async () => {
   const res = await fetch(`${BROKER}/register`, {
     method: 'POST',
@@ -46,6 +48,8 @@ await test(`Register encrypted payload (UID: ${uid})`, async () => {
   });
   const data = await res.json();
   if (data.status !== 'registered') throw new Error(`Expected "registered", got "${data.status}"`);
+  hostToken = data.hostToken;
+  if (!hostToken) throw new Error('Register did not return a hostToken');
 });
 
 // 3. Broker returns encrypted blob (NOT plaintext)
@@ -123,7 +127,10 @@ await test('404 on missing UID', async () => {
 
 // 10. Revoke works
 await test(`Revoke UID: ${uid}`, async () => {
-  const res = await fetch(`${BROKER}/revoke/${uid}`, { method: 'DELETE' });
+  const res = await fetch(`${BROKER}/revoke/${uid}`, {
+    method: 'DELETE',
+    headers: { 'x-host-token': hostToken },
+  });
   const data = await res.json();
   if (data.status !== 'revoked') throw new Error(`Expected "revoked", got "${data.status}"`);
 });

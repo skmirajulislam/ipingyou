@@ -344,6 +344,22 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
     return { clients: decryptedClients };
   }
 
+  async function fetchDecryptedApprovals() {
+    const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
+    const decryptedApprovals = await Promise.all((data.approvals || []).map(async (a) => {
+      const base = { id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt };
+      if (!a.iv || !a.ciphertext || !a.salt) return base;
+      try {
+        const decrypted = await decryptAsync(a.iv, a.ciphertext, password, a.salt);
+        const details = JSON.parse(decrypted);
+        return { ...base, username: details.username, hostname: details.hostname, os: details.os, intent: details.intent };
+      } catch {
+        return base;
+      }
+    }));
+    return { approvalRequired: data.approvalRequired, approvals: decryptedApprovals };
+  }
+
   app.get('/api/status', (_req, res) => {
     res.json({
       uid,
@@ -361,7 +377,7 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
 
   app.get('/api/approvals', async (_req, res) => {
     try {
-      const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
+      const data = await fetchDecryptedApprovals();
       res.json(data);
     } catch (err) {
       res.status(500).json({ error: err.message });
@@ -399,7 +415,7 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
       if (closed) return;
       try {
         const [approvalData, clientData] = await Promise.all([
-          fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken).catch(() => ({ approvals: [] })),
+          fetchDecryptedApprovals().catch(() => ({ approvals: [] })),
           fetchDecryptedClients().catch(() => ({ clients: [] })),
         ]);
 
@@ -666,6 +682,9 @@ function renderApprovals(approvals) {
     badge.className = 'status-badge status-pending';
     badge.textContent = 'PENDING';
     heading.append(title, badge);
+    const details = document.createElement('div');
+    details.className = 'meta';
+    details.textContent = 'User: ' + String(req.username || 'unknown') + '  |  Host: ' + String(req.hostname || 'unknown') + '  |  OS: ' + String(req.os || 'unknown');
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = 'Submitted: ' + new Date(req.createdAt).toLocaleTimeString();
@@ -684,7 +703,7 @@ function renderApprovals(approvals) {
       });
       actions.appendChild(button);
     }
-    item.append(heading, meta, actions);
+    item.append(heading, details, meta, actions);
     fragment.appendChild(item);
   }
   for (const req of decided) {
@@ -871,6 +890,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
   let dashboardInstance = null;
 
   const renderDashboard = () => {
+    const isPrivateBroker = Boolean(global.privateBrokerInstance);
     console.clear();
     console.log('');
     console.log(chalk.bold('  ╔════════════════════════════════════════════════════╗'));
@@ -879,7 +899,9 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
     console.log(`  ║  ${chalk.cyan('UID:')}        ${chalk.bold.white(uid.padEnd(30))}║`);
     console.log(`  ║  ${chalk.cyan('Password:')}   ${chalk.bold.white(secureSensitive(password).padEnd(30))}║`);
     console.log(`  ║  ${chalk.cyan('Service:')}    ${chalk.dim(serviceConfig.type.toUpperCase() + ' (Port ' + serviceConfig.port + ')').padEnd(30)}║`);
-    console.log(`  ║  ${chalk.cyan('Tunnel:')}     ${chalk.dim(sessionState.tunnelUrl.substring(0, 40))}  ║`);
+    if (isPrivateBroker) {
+      console.log(`  ║  ${chalk.cyan('Tunnel:')}     ${chalk.dim(sessionState.tunnelUrl.substring(0, 40))}  ║`);
+    }
     if (serviceConfig.chatUrl) {
       console.log(`  ║  ${chalk.cyan('Chat URL:')}   ${chalk.dim(serviceConfig.chatUrl.substring(0, 40))}  ║`);
     }
