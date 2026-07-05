@@ -168,7 +168,13 @@ const HTML_CONTENT = `
         div.textContent = msg.text;
       } else {
         div.className = 'message ' + (msg.sender === username ? 'self' : 'other');
-        div.innerHTML = '<div class="message-header">' + msg.sender + ' • ' + msg.time + '</div><div>' + msg.text + '</div>';
+        const header = document.createElement('div');
+        header.className = 'message-header';
+        header.textContent = String(msg.sender || 'Unknown') + ' • ' + String(msg.time || '');
+        const body = document.createElement('div');
+        body.textContent = String(msg.text || '');
+        div.appendChild(header);
+        div.appendChild(body);
       }
       msgs.appendChild(div);
       msgs.scrollTop = msgs.scrollHeight;

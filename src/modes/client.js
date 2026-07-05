@@ -24,7 +24,7 @@ import { getConfig, saveAlias } from '../lib/config.js';
 import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval } from '../lib/broker.js';
 import { calculateChecksum } from '../lib/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
-import { buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
+import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
 import { buildTmuxSessionName, TMUX_SOCKET_PATH } from '../lib/tmux.js';
 import open from 'open';
 import { secureSensitiveUrl } from '../lib/secure-print.js';
@@ -187,12 +187,10 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
 
   await showConnectionTrace('Local', 'Remote SCP');
 
-  const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
-
   // Construct SCP args
   const scpArgs = [
     '-r', // recursive just in case
-    '-o', `ProxyCommand=${proxyCommand}`,
+    ...buildProxyCommandOption(hostname),
     ...getKnownHostsOptions(persistKnownHosts),
     '-o', 'IdentitiesOnly=yes',
     ...getSshControlOptions(hostname)
@@ -273,10 +271,9 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
 
 async function downloadSpecificRemotePath(username, hostname, privateKeyPath, remotePath, localPath, persistKnownHosts = true) {
   await showConnectionTrace('Local', 'Remote SCP');
-  const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
   const scpArgs = [
     '-r',
-    '-o', `ProxyCommand=${proxyCommand}`,
+    ...buildProxyCommandOption(hostname),
     ...getKnownHostsOptions(persistKnownHosts),
     '-o', 'IdentitiesOnly=yes',
     ...getSshControlOptions(hostname),
@@ -667,8 +664,7 @@ export async function performSCPNonInteractive(params = {}) {
   const privateKeyPath = payload.privateKey ? await writeEphemeralPrivateKey(payload.privateKey) : null;
 
   // Build scp args similar to performSCP
-  const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
-  const scpArgs = ['-r', '-o', `ProxyCommand=${proxyCommand}`, ...getKnownHostsOptions(persistKnownHosts), '-o', 'IdentitiesOnly=yes', ...getSshControlOptions(hostname)];
+  const scpArgs = ['-r', ...buildProxyCommandOption(hostname), ...getKnownHostsOptions(persistKnownHosts), '-o', 'IdentitiesOnly=yes', ...getSshControlOptions(hostname)];
   if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
 
   const remoteSpec = `${username}@${hostname}:${formatScpRemotePath(remotePath)}`;

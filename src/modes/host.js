@@ -18,6 +18,7 @@ import chalk from 'chalk';
 import inquirer from 'inquirer';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import { generateUID } from '../lib/uid.js';
@@ -618,8 +619,52 @@ pollClients();
 async function spawnPrivateBroker() {
   console.log(chalk.yellow('\n  ⚠️  Public Broker is unreachable. Spawning Private Broker...'));
 
+  const packageRoot = path.resolve(__dirname, '../..');
+  const serverEntrypoint = path.join(__dirname, '../server.js');
+  const requireFromServer = createRequire(serverEntrypoint);
+  const requiredBrokerPackages = ['express', 'express-rate-limit', 'helmet'];
+  const missingPackages = requiredBrokerPackages.filter((pkg) => {
+    try {
+      requireFromServer.resolve(pkg);
+      return false;
+    } catch {
+      return true;
+    }
+  });
+
+  if (missingPackages.length > 0) {
+    console.log(chalk.yellow(`  ⚠️  Missing broker runtime packages: ${missingPackages.join(', ')}`));
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const installResult = await execa(
+      npmCmd,
+      ['install', '--no-save', '--no-audit', '--no-fund', ...missingPackages],
+      { cwd: packageRoot, reject: false, all: true }
+    );
+
+    if (installResult.exitCode !== 0) {
+      const installOutput = installResult.all?.trim();
+      throw new Error(
+        `Private broker dependencies failed to install (${missingPackages.join(', ')})`
+        + (installOutput ? `: ${installOutput}` : '')
+      );
+    }
+
+    // Verify modules are now resolvable for the server entrypoint context.
+    const unresolved = missingPackages.filter((pkg) => {
+      try {
+        requireFromServer.resolve(pkg);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    if (unresolved.length > 0) {
+      throw new Error(`Private broker dependencies are still missing after install: ${unresolved.join(', ')}`);
+    }
+  }
+
   // 1. Spawn the broker server process
-  const brokerProcess = execa('node', [path.join(__dirname, '../server.js')], {
+  const brokerProcess = execa('node', [serverEntrypoint], {
     env: { ...process.env, PORT: '4040' },
     reject: false,
     all: true,

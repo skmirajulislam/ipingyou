@@ -1,6 +1,6 @@
 {
   "name": "@miraj181/ipingyou",
-  "version": "2.1.6",
+  "version": "2.1.9",
   "description": "SecureLink-CLI — Secure peer-to-peer remote access via SSH & Cloudflare Tunnels",
   "main": "src/cli.js",
   "bin": {
@@ -46,7 +46,10 @@
   "dependencies": {
     "chalk": "^5.3.0",
     "commander": "^15.0.0",
+    "express": "^4.21.2",
+    "express-rate-limit": "^7.5.0",
     "execa": "^9.5.2",
+    "helmet": "^8.0.0",
     "inquirer": "^12.11.1",
     "nanoid": "^5.0.9",
     "open": "^11.0.0",

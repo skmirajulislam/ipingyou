@@ -1,11 +1,26 @@
 import crypto from 'node:crypto';
 
-export function extractHostname(url) {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return url.replace(/^https?:\/\//, '').replace(/\/$/, '');
+const SAFE_HOSTNAME_PATTERN = /^(?=.{1,253}$)(?!.*\.\.)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+
+export function assertSafeHostname(hostname, label = 'hostname') {
+  const normalized = String(hostname || '').trim().replace(/\.$/, '').toLowerCase();
+  if (!normalized || !SAFE_HOSTNAME_PATTERN.test(normalized)) {
+    throw new Error(`Invalid ${label}`);
   }
+  return normalized;
+}
+
+export function extractHostname(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('Invalid tunnel URL');
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new Error('Tunnel URL must use HTTPS');
+  }
+  return assertSafeHostname(parsed.hostname, 'tunnel hostname');
 }
 
 export function quoteRemoteShell(value) {
@@ -25,13 +40,19 @@ export function formatScpRemotePath(remotePath) {
 }
 
 export function getSshControlOptions(hostname) {
+  const safeHostname = assertSafeHostname(hostname, 'ssh hostname');
   if (process.platform === 'win32') return [];
-  const hash = crypto.createHash('sha256').update(hostname).digest('hex').slice(0, 10);
+  const hash = crypto.createHash('sha256').update(safeHostname).digest('hex').slice(0, 10);
   return [
     '-o', 'ControlMaster=auto',
     '-o', 'ControlPersist=5m',
     '-o', `ControlPath=/tmp/ipingyou-${process.pid}-${hash}-%r.sock`,
   ];
+}
+
+export function buildProxyCommandOption(hostname) {
+  const safeHostname = assertSafeHostname(hostname, 'tunnel hostname');
+  return ['-o', `ProxyCommand=cloudflared access tcp --hostname ${safeHostname}`];
 }
 
 export function getKnownHostsOptions(persistKnownHosts = true) {
@@ -48,9 +69,8 @@ export function getKnownHostsOptions(persistKnownHosts = true) {
 
 export function buildSshArgs(hostname, privateKeyPath, extraOptions = [], options = {}) {
   const { persistKnownHosts = true } = options;
-  const proxyCommand = `cloudflared access tcp --hostname ${hostname}`;
   const sshArgs = [
-    '-o', `ProxyCommand=${proxyCommand}`,
+    ...buildProxyCommandOption(hostname),
     ...getKnownHostsOptions(persistKnownHosts),
     '-o', 'IdentitiesOnly=yes',
     ...getSshControlOptions(hostname),

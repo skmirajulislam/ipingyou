@@ -574,12 +574,10 @@ async function tryAITransfer(task, context) {
   if (context && context.scope === 'remote' && context.hostname && context.username) {
     console.log(chalk.dim(`  Using active remote session: ${context.username}@${context.hostname}`));
 
-    const { getSshControlOptions, formatScpRemotePath } = await import('../lib/ssh.js');
-
-    const proxyCommand = `cloudflared access tcp --hostname ${context.hostname}`;
+    const { buildProxyCommandOption, getSshControlOptions, formatScpRemotePath } = await import('../lib/ssh.js');
     const scpArgs = [
       '-r',
-      '-o', `ProxyCommand=${proxyCommand}`,
+      ...buildProxyCommandOption(context.hostname),
       '-o', 'StrictHostKeyChecking=accept-new',
       '-o', 'IdentitiesOnly=yes',
       ...getSshControlOptions(context.hostname),
@@ -630,4 +628,3 @@ async function tryAITransfer(task, context) {
     return true;
   }
 }
-
