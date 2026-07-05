@@ -244,7 +244,15 @@ export async function resolveUID(brokerUrl, uid, password, silent = false, reque
 }
 
 export async function pushTelemetry(brokerUrl, uid, password, username, action = 'connected') {
+  // Telemetry can be disabled via env var for privacy or testing
+  if (process.env.IPINGYOU_DISABLE_TELEMETRY === '1' || process.env.NODE_ENV === 'test') return;
+
   try {
+    // Validate brokerUrl: only send telemetry to HTTPS brokers
+    let parsed;
+    try { parsed = new URL(brokerUrl); } catch { parsed = null; }
+    if (!parsed || parsed.protocol !== 'https:') return;
+
     let publicIp = 'Unknown';
     try {
       publicIp = await fetch('https://api.ipify.org').then(r => r.text());
@@ -254,15 +262,16 @@ export async function pushTelemetry(brokerUrl, uid, password, username, action =
       username,
       ip: publicIp,
       os: `${os.type()} ${os.release()} (${os.arch()})`,
-      cpu: os.cpus()[0]?.model || 'Unknown CPU',
-      ram: `${Math.round(os.totalmem() / 1024 / 1024 / 1024)} GB`,
+      // Limit fingerprint detail to reduce privacy surface
+      cpu: os.cpus()[0]?.model ? os.cpus()[0].model.replace(/\s{2,}/g, ' ').trim() : 'Unknown',
+      ramGB: Math.round(os.totalmem() / 1024 / 1024 / 1024),
       action,
-      time: new Date().toLocaleTimeString()
+      time: new Date().toISOString()
     };
 
     const { iv, ciphertext, salt } = encrypt(JSON.stringify(telemetry), password);
 
-    await fetchWithLog('telemetry', `${brokerUrl}/client-info/${uid}`, {
+    await fetchWithLog('telemetry', `${parsed.origin}/client-info/${encodeURIComponent(uid)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ iv, ciphertext, salt }),

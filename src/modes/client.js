@@ -25,7 +25,7 @@ import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForAppro
 import { calculateChecksum } from '../lib/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
 import { buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
-import { buildTmuxSessionName, tmuxSocketCommand } from '../lib/tmux.js';
+import { buildTmuxSessionName, TMUX_SOCKET_PATH } from '../lib/tmux.js';
 import open from 'open';
 import { secureSensitiveUrl } from '../lib/secure-print.js';
 import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
@@ -90,8 +90,11 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
 
     sshArgs.push(`${username}@${hostname}`);
     const tmuxSession = buildTmuxSessionName(username);
-    const tmuxPrepare = `${tmuxSocketCommand()} has-session -t ${tmuxSession} 2>/dev/null || ${tmuxSocketCommand()} new-session -d -s ${tmuxSession}`;
-    const tmuxAttach = `${tmuxSocketCommand()} attach -t ${tmuxSession}`;
+    const quotedSocket = quoteRemoteShell(TMUX_SOCKET_PATH);
+    const quotedSession = quoteRemoteShell(tmuxSession);
+    const tmuxSocketCmdStr = `tmux -S ${quotedSocket}`;
+    const tmuxPrepare = `${tmuxSocketCmdStr} has-session -t ${quotedSession} 2>/dev/null || ${tmuxSocketCmdStr} new-session -d -s ${quotedSession}`;
+    const tmuxAttach = `${tmuxSocketCmdStr} attach -t ${quotedSession}`;
     const tmuxCommand = `if command -v tmux >/dev/null 2>&1; then (${tmuxPrepare} && ${tmuxAttach}) || exec $SHELL -l; else exec $SHELL -l; fi`;
     sshArgs.push('-t', tmuxCommand);
 

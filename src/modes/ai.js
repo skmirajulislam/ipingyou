@@ -2,7 +2,7 @@
  * AI Mode — privacy-first local/remote task assistant powered by Groq.
  */
 
-import { execa, execaCommand } from 'execa';
+import { execa } from 'execa';
 import { parse as shellParse } from 'shell-quote';
 import chalk from 'chalk';
 import inquirer from 'inquirer';

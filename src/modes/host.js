@@ -13,7 +13,7 @@
  * ============================================================
  */
 
-import { execa, execaCommand } from 'execa';
+import { execa } from 'execa';
 import chalk from 'chalk';
 import inquirer from 'inquirer';
 import path from 'node:path';
@@ -56,24 +56,24 @@ async function ensureSSHRunning() {
   try {
     if (osInfo.isLinux) {
       try {
-        await execaCommand('systemctl is-active ssh', { reject: true });
+        await execa('systemctl', ['is-active', 'ssh'], { reject: true });
         spinner.succeed('SSH service is active');
       } catch {
         spinner.text = 'Starting SSH service...';
         try {
-          await execaCommand('sudo systemctl start ssh', { stdio: 'inherit' });
+          await execa('sudo', ['systemctl', 'start', 'ssh'], { stdio: 'inherit' });
           spinner.succeed('SSH service started');
         } catch {
-          await execaCommand('sudo systemctl start sshd', { stdio: 'inherit' });
+          await execa('sudo', ['systemctl', 'start', 'sshd'], { stdio: 'inherit' });
           spinner.succeed('SSH service started (sshd)');
         }
       }
     } else if (osInfo.isMac) {
       try {
-        const { stdout } = await execaCommand('sudo systemsetup -getremotelogin', { reject: false });
+        const { stdout } = await execa('sudo', ['systemsetup', '-getremotelogin'], { reject: false });
         if (stdout.toLowerCase().includes('off')) {
           spinner.text = 'Enabling Remote Login...';
-          await execaCommand('sudo systemsetup -setremotelogin on', { stdio: 'inherit' });
+          await execa('sudo', ['systemsetup', '-setremotelogin', 'on'], { stdio: 'inherit' });
           spinner.succeed('Remote Login enabled');
         } else {
           spinner.succeed('SSH (Remote Login) is active');
@@ -83,10 +83,10 @@ async function ensureSSHRunning() {
       }
     } else if (osInfo.isWindows) {
       try {
-        const { stdout } = await execaCommand('sc query sshd', { reject: false });
+        const { stdout } = await execa('sc', ['query', 'sshd'], { reject: false });
         if (stdout.includes('STOPPED')) {
           spinner.text = 'Starting OpenSSH Server...';
-          await execaCommand('net start sshd', { stdio: 'inherit' });
+          await execa('net', ['start', 'sshd'], { stdio: 'inherit' });
           spinner.succeed('OpenSSH Server started');
         } else if (stdout.includes('RUNNING')) {
           spinner.succeed('OpenSSH Server is running');
@@ -113,28 +113,29 @@ async function ensureTmuxInstalled() {
   const spinner = createSpinner('Checking tmux installation...', networkSpinner).start();
   try {
     try {
-      await execaCommand('tmux -V', { reject: true });
+      await execa('tmux', ['-V'], { reject: true });
       spinner.succeed('tmux is installed (Terminal Mirroring available)');
     } catch {
       spinner.text = 'tmux not found. Attempting to install...';
       if (osInfo.isLinux) {
         if (fs.existsSync('/usr/bin/apt') || fs.existsSync('/usr/bin/apt-get')) {
-          await execaCommand('sudo apt-get update && sudo apt-get install -y tmux', { shell: true, stdio: 'inherit' });
+          await execa('sudo', ['apt-get', 'update', '-qq'], { stdio: 'inherit' });
+          await execa('sudo', ['apt-get', 'install', '-y', 'tmux'], { stdio: 'inherit' });
         } else if (fs.existsSync('/usr/bin/dnf')) {
-          await execaCommand('sudo dnf install -y tmux', { shell: true, stdio: 'inherit' });
+          await execa('sudo', ['dnf', 'install', '-y', 'tmux'], { stdio: 'inherit' });
         } else if (fs.existsSync('/usr/bin/yum')) {
-          await execaCommand('sudo yum install -y tmux', { shell: true, stdio: 'inherit' });
+          await execa('sudo', ['yum', 'install', '-y', 'tmux'], { stdio: 'inherit' });
         } else if (fs.existsSync('/usr/bin/pacman')) {
-          await execaCommand('sudo pacman -S --noconfirm tmux', { shell: true, stdio: 'inherit' });
+          await execa('sudo', ['pacman', '-S', '--noconfirm', 'tmux'], { stdio: 'inherit' });
         } else if (fs.existsSync('/sbin/apk')) {
-          await execaCommand('sudo apk add tmux', { shell: true, stdio: 'inherit' });
+          await execa('sudo', ['apk', 'add', 'tmux'], { stdio: 'inherit' });
         } else {
           throw new Error('Unsupported Linux package manager');
         }
         spinner.succeed('tmux installed successfully (Terminal Mirroring available)');
       } else if (osInfo.isMac) {
         try {
-          await execaCommand('brew install tmux', { shell: true, stdio: 'inherit' });
+          await execa('brew', ['install', 'tmux'], { stdio: 'inherit' });
           spinner.succeed('tmux installed successfully (Terminal Mirroring available)');
         } catch {
           throw new Error('Homebrew is required to install tmux on macOS');
@@ -842,7 +843,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           console.log('');
 
           try {
-            await execaCommand('tmux -V', { reject: true });
+            await execa('tmux', ['-V'], { reject: true });
             const sessions = await getMirrorableSessions();
             if (sessions.length === 0) {
               console.log(chalk.yellow('  ⚠️  No mirrored terminal session is active yet.'));
@@ -929,9 +930,9 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           const spinner = createSpinner('Terminating active SSH sessions...', networkSpinner).start();
           try {
             if (process.platform === 'win32') {
-              await execaCommand('powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \\"name = \'sshd.exe\'\\" | Where-Object { $_.CommandLine -match \'sshd:.*@\' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"', { reject: false });
+              await execa('powershell', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"name = 'sshd.exe'\" | Where-Object { $_.CommandLine -match 'sshd:.*@' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"], { reject: false });
             } else {
-              await execaCommand("pkill -f 'sshd:.*@'", { shell: true, reject: false });
+              await execa('pkill', ['-f', 'sshd:.*@'], { reject: false });
               await execa('tmux', [...tmuxSocketArgs(), 'kill-server'], { reject: false });
               const legacySessions = await listTmuxSessions();
               for (const session of legacySessions) {

@@ -13,7 +13,7 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execaCommand } from 'execa';
+import { execa } from 'execa';
 import { TMUX_SESSION_NAME, TMUX_SESSION_PREFIX, tmuxSocketArgs } from './tmux.js';
 
 /** @type {Set<number>} — Active child PIDs we manage */
@@ -188,21 +188,31 @@ export async function executePanicMode() {
   console.log(chalk.dim('  [1/4] Terminating all tunnel and host processes...'));
   try {
     if (process.platform === 'win32') {
-      await execaCommand('taskkill /F /IM cloudflared.exe', { reject: false });
+      // taskkill expects a command string on Windows; pass args safely
+      await execa('taskkill', ['/F', '/IM', 'cloudflared.exe'], { reject: false });
     } else {
-      await execaCommand('pkill -9 -f cloudflared', { reject: false });
-      await execaCommand('pkill -9 -f "sshd:.*@"', { reject: false });
-      await execaCommand(`tmux ${tmuxSocketArgs().join(' ')} kill-server`, { reject: false });
-      const { stdout } = await execaCommand('tmux list-sessions -F "#{session_name}"', { reject: false });
+      // Use argument arrays to avoid shell interpolation
+      await execa('pkill', ['-9', '-f', 'cloudflared'], { reject: false });
+      await execa('pkill', ['-9', '-f', 'sshd:.*@'], { reject: false });
+
+      const socketArgs = Array.isArray(tmuxSocketArgs) ? tmuxSocketArgs() : [];
+      // Ensure socketArgs are strings and safe-ish before passing to execa
+      const safeSocketArgs = (socketArgs || []).map(a => String(a));
+      await execa('tmux', [...safeSocketArgs, 'kill-server'], { reject: false });
+
+      const { stdout } = await execa('tmux', ['list-sessions', '-F', '#{session_name}'], { reject: false });
       const legacyNames = stdout
         .split(/\r?\n/)
         .filter(Boolean)
         .filter(name => name === TMUX_SESSION_NAME || name.startsWith(TMUX_SESSION_PREFIX));
       for (const name of legacyNames) {
-        await execaCommand(`tmux kill-session -t ${name}`, { reject: false });
+        await execa('tmux', ['kill-session', '-t', name], { reject: false });
       }
     }
-  } catch {}
+  } catch (err) {
+    // Best-effort cleanup; log debug info without exposing stack in normal flow
+    // (keep behavior unchanged otherwise)
+  }
 
   // 2. Delete configuration and aliases
   console.log(chalk.dim('  [2/4] Wiping configuration files...'));

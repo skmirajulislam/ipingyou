@@ -2,7 +2,7 @@
  * Doctor Mode — non-invasive diagnostics for iPingYou.
  */
 
-import { execa, execaCommand } from 'execa';
+import { execa } from 'execa';
 import chalk from 'chalk';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -66,7 +66,7 @@ async function commandFound(command) {
 async function checkSshService() {
   const osInfo = detectOS();
   if (osInfo.isMac) {
-    const launchctl = await execaCommand('launchctl print-disabled system', { reject: false, timeout: 5000 });
+    const launchctl = await execa('launchctl', ['print-disabled', 'system'], { reject: false, timeout: 5000 });
     const launchctlOutput = `${launchctl.stdout || ''}\n${launchctl.stderr || ''}`.toLowerCase();
     const launchctlMatch = launchctlOutput.match(/"com\.openssh\.sshd"\s*=>\s*(enabled|disabled)/);
     if (launchctlMatch) {
@@ -78,7 +78,7 @@ async function checkSshService() {
       };
     }
 
-    const result = await execaCommand('systemsetup -getremotelogin', { reject: false, timeout: 5000 });
+    const result = await execa('systemsetup', ['-getremotelogin'], { reject: false, timeout: 5000 });
     const output = result.stdout || result.stderr || '';
     if (/on/i.test(output)) return { status: 'pass', detail: 'Remote Login is on' };
     if (/off/i.test(output)) {
@@ -96,8 +96,8 @@ async function checkSshService() {
   }
 
   if (osInfo.isLinux) {
-    const ssh = await execaCommand('systemctl is-active ssh', { reject: false, timeout: 5000 });
-    const sshd = ssh.exitCode === 0 ? ssh : await execaCommand('systemctl is-active sshd', { reject: false, timeout: 5000 });
+    const ssh = await execa('systemctl', ['is-active', 'ssh'], { reject: false, timeout: 5000 });
+    const sshd = ssh.exitCode === 0 ? ssh : await execa('systemctl', ['is-active', 'sshd'], { reject: false, timeout: 5000 });
     if (sshd.exitCode === 0) return { status: 'pass', detail: 'SSH service is active' };
     return {
       status: 'warn',
@@ -107,7 +107,7 @@ async function checkSshService() {
   }
 
   if (osInfo.isWindows) {
-    const result = await execaCommand('sc query sshd', { reject: false, timeout: 5000 });
+    const result = await execa('sc', ['query', 'sshd'], { reject: false, timeout: 5000 });
     if (/RUNNING/i.test(result.stdout)) return { status: 'pass', detail: 'OpenSSH Server is running' };
     return {
       status: 'warn',
@@ -196,7 +196,11 @@ function checkAiSafety() {
 }
 
 async function runProjectSelfTest(label, command) {
-  const result = await execaCommand(command, {
+  // Prefer splitting simple commands into args to avoid shell interpolation
+  const parts = String(command).split(' ').filter(Boolean);
+  const cmd = parts.shift();
+  const args = parts;
+  const result = await execa(cmd, args, {
     reject: false,
     timeout: 30000,
     maxBuffer: 1024 * 1024,

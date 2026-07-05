@@ -348,22 +348,22 @@ program
       console.log(chalk.bold.cyan('  👻 Background Service Manager'));
       console.log(chalk.dim('  ──────────────────────────────────────'));
       
-      const { execaCommand } = await import('execa');
+      const { execa } = await import('execa');
       
       if (action === 'install') {
         console.log(chalk.dim('  Installing PM2 globally and starting host...'));
-        await execaCommand('npm install -g pm2', { stdio: 'inherit' });
-        await execaCommand('pm2 start ipingyou --name "ipingyou-host" -- host', { stdio: 'inherit' });
-        await execaCommand('pm2 save', { stdio: 'inherit' });
-        await execaCommand('pm2 startup', { stdio: 'inherit' });
+        await execa('npm', ['install', '-g', 'pm2'], { stdio: 'inherit' });
+        await execa('pm2', ['start', 'ipingyou', '--name', 'ipingyou-host', '--', 'host'], { stdio: 'inherit' });
+        await execa('pm2', ['save'], { stdio: 'inherit' });
+        await execa('pm2', ['startup'], { stdio: 'inherit' });
         console.log(chalk.green('\n  ✅ Service installed and running in the background.'));
       } else if (action === 'stop') {
-        await execaCommand('pm2 stop ipingyou-host', { stdio: 'inherit' });
-        await execaCommand('pm2 delete ipingyou-host', { stdio: 'inherit' });
-        await execaCommand('pm2 save', { stdio: 'inherit' });
+        await execa('pm2', ['stop', 'ipingyou-host'], { stdio: 'inherit' });
+        await execa('pm2', ['delete', 'ipingyou-host'], { stdio: 'inherit' });
+        await execa('pm2', ['save'], { stdio: 'inherit' });
         console.log(chalk.green('\n  ✅ Service stopped and removed.'));
       } else if (action === 'status') {
-        await execaCommand('pm2 status ipingyou-host', { stdio: 'inherit' });
+        await execa('pm2', ['status', 'ipingyou-host'], { stdio: 'inherit' });
       } else {
         console.log(chalk.red(`  ❌ Unknown action: ${action}. Use install, stop, or status.`));
       }

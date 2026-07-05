@@ -8,10 +8,11 @@
  * ============================================================
  */
 
-import { execaCommand } from 'execa';
+import { execa } from 'execa';
 import chalk from 'chalk';
 import ora from 'ora';
 import os from 'node:os';
+import fs from 'node:fs';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { chmod, mkdir, stat, rename } from 'node:fs/promises';
@@ -42,8 +43,9 @@ export function detectOS() {
  */
 export async function detectLinuxDistro() {
   try {
-    const { stdout } = await execaCommand('cat /etc/os-release', { reject: false });
-    const lower = stdout.toLowerCase();
+    // Read the os-release file directly instead of spawning a process
+    const data = await fs.promises.readFile('/etc/os-release', 'utf8');
+    const lower = data.toLowerCase();
     if (lower.includes('ubuntu') || lower.includes('debian') || lower.includes('kali') || lower.includes('mint')) {
       return 'debian';
     }
@@ -66,8 +68,12 @@ export async function detectLinuxDistro() {
  */
 export async function commandExists(cmd) {
   try {
-    const checkCmd = process.platform === 'win32' ? `where ${cmd}` : `which ${cmd}`;
-    await execaCommand(checkCmd, { reject: true });
+    // Prefer direct exec of the check command to avoid shell parsing
+    if (process.platform === 'win32') {
+      await execa('where', [cmd], { reject: true });
+    } else {
+      await execa('which', [cmd], { reject: true });
+    }
     return true;
   } catch {
     return false;
@@ -93,7 +99,20 @@ export async function hasSudo() {
 async function runWithSpinner(label, cmd, opts = {}) {
   const spinner = ora(label).start();
   try {
-    await execaCommand(cmd, { stdio: 'pipe', reject: true, ...opts });
+    // Support both string shell commands and argument arrays.
+    if (Array.isArray(cmd)) {
+      const [c, ...args] = cmd;
+      await execa(c, args, { stdio: 'pipe', reject: true, ...opts });
+    } else if (typeof cmd === 'string') {
+      if (process.platform === 'win32') {
+        await execa('cmd', ['/c', cmd], { stdio: 'pipe', reject: true, ...opts });
+      } else {
+        await execa('sh', ['-c', cmd], { stdio: 'pipe', reject: true, ...opts });
+      }
+    } else {
+      throw new Error('Unsupported command type');
+    }
+
     spinner.succeed(label.replace('...', '') + chalk.green(' ✓'));
     return true;
   } catch (err) {
@@ -198,14 +217,18 @@ async function ensureDownloader() {
  */
 async function downloadFile(url, destPath, downloader) {
   const cmds = {
-    curl:       `curl -fsSL -o "${destPath}" "${url}"`,
-    wget:       `wget -q -O "${destPath}" "${url}"`,
-    powershell: `powershell -Command "Invoke-WebRequest -Uri '${url}' -OutFile '${destPath}'"`,
+    curl:       ['curl', ['-fsSL', '-o', destPath, url]],
+    wget:       ['wget', ['-q', '-O', destPath, url]],
+    powershell: ['powershell', ["-Command", `Invoke-WebRequest -Uri '${url}' -OutFile '${destPath}'`]],
   };
+
+  const entry = cmds[downloader];
+  if (!entry) return false;
+  const [bin, args] = entry;
 
   return runWithSpinner(
     `  Downloading ${chalk.cyan(url.split('/').pop())}...`,
-    cmds[downloader]
+    [bin, ...args]
   );
 }
 
