@@ -8,6 +8,7 @@
  */
 
 import crypto from 'node:crypto';
+import { canUseWorkers, runWorkerTask } from './worker-runtime.js';
 
 /**
  * Derive a 256-bit encryption key from a password and salt using PBKDF2.
@@ -42,6 +43,20 @@ export function encrypt(plaintext, password) {
   };
 }
 
+export async function encryptAsync(plaintext, password) {
+  if (!canUseWorkers()) return encrypt(plaintext, password);
+  try {
+    const result = await runWorkerTask('encrypt', { plaintext, password });
+    return {
+      iv: result.iv,
+      ciphertext: result.ciphertext,
+      salt: result.salt,
+    };
+  } catch {
+    return encrypt(plaintext, password);
+  }
+}
+
 /**
  * Decrypt a ciphertext with AES-256-CBC using a password and salt.
  * @param {string} ivHex  — 32-char hex IV
@@ -59,4 +74,14 @@ export function decrypt(ivHex, cipherBase64, password, saltHex) {
   let dec = decipher.update(cipherBase64, 'base64', 'utf8');
   dec += decipher.final('utf8');
   return dec;
+}
+
+export async function decryptAsync(ivHex, cipherBase64, password, saltHex) {
+  if (!canUseWorkers()) return decrypt(ivHex, cipherBase64, password, saltHex);
+  try {
+    const result = await runWorkerTask('decrypt', { ivHex, cipherBase64, password, saltHex });
+    return result.plaintext;
+  } catch {
+    return decrypt(ivHex, cipherBase64, password, saltHex);
+  }
 }

@@ -22,7 +22,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import { generateUID } from '../lib/uid.js';
-import { decrypt } from '../lib/crypto.js';
+import { decryptAsync } from '../lib/crypto.js';
 import { cleanupAll, killProcessTree, trackPID, untrackPID, setRevokeOnExit, addCleanupHook } from '../lib/cleanup.js';
 import { detectOS } from '../lib/platform.js';
 import { createSpinner, networkSpinner, typeText } from '../lib/animations.js';
@@ -279,6 +279,27 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
   const app = express();
   const startedAt = new Date().toISOString();
 
+  async function fetchDecryptedClients() {
+    const brokerRes = await fetch(`${BROKER_URL}/clients/${uid}`, {
+      headers: sessionState.hostToken ? { 'x-host-token': sessionState.hostToken } : {}
+    });
+    if (!brokerRes.ok) {
+      const data = await brokerRes.json().catch(() => ({}));
+      throw new Error(data.error || 'Failed to fetch clients');
+    }
+    const data = await brokerRes.json();
+    const decryptedClients = await Promise.all((data.clients || []).map(async (clientBlob) => {
+      try {
+        const decrypted = await decryptAsync(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
+        const t = JSON.parse(decrypted);
+        return { ...t, seenAt: clientBlob.seenAt || null };
+      } catch {
+        return { error: 'decrypt_failed', seenAt: clientBlob.seenAt || null };
+      }
+    }));
+    return { clients: decryptedClients };
+  }
+
   app.get('/api/status', (_req, res) => {
     res.json({
       uid,
@@ -294,47 +315,86 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
 
   app.use(express.json());
 
+  app.get('/api/approvals', async (_req, res) => {
+    try {
+      const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
+      res.json(data);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Server-Sent Events for live telemetry & approvals
   app.get('/api/events', async (req, res) => {
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders?.();
 
     let closed = false;
-    const push = async () => {
+    let timer = null;
+    let intervalMs = 5000;
+    let unchangedCycles = 0;
+    let lastApprovals = '';
+    let lastClients = '';
+
+    const writeEvent = (event, payload) => {
       if (closed) return;
-      try {
-        const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken).catch(() => ({ approvals: [] }));
-        res.write(`event: approvals\n`);
-        res.write(`data: ${JSON.stringify(data)}\n\n`);
-      } catch { }
+      res.write(`event: ${event}\n`);
+      res.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
 
-    const iv = setInterval(push, 5000);
-    req.on('close', () => { clearInterval(iv); closed = true; });
-    // send initial payload
-    await push();
+    const scheduleNext = () => {
+      if (closed) return;
+      timer = setTimeout(pushLoop, intervalMs);
+    };
+
+    const pushLoop = async () => {
+      if (closed) return;
+      try {
+        const [approvalData, clientData] = await Promise.all([
+          fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken).catch(() => ({ approvals: [] })),
+          fetchDecryptedClients().catch(() => ({ clients: [] })),
+        ]);
+
+        const approvalsPayload = { approvals: approvalData.approvals || [] };
+        const clientsPayload = { clients: clientData.clients || [] };
+        const approvalsHash = JSON.stringify(approvalsPayload.approvals);
+        const clientsHash = JSON.stringify(clientsPayload.clients);
+        const changed = approvalsHash !== lastApprovals || clientsHash !== lastClients;
+
+        if (approvalsHash !== lastApprovals) {
+          writeEvent('approvals', approvalsPayload);
+          lastApprovals = approvalsHash;
+        }
+        if (clientsHash !== lastClients) {
+          writeEvent('clients', clientsPayload);
+          lastClients = clientsHash;
+        }
+
+        if (changed) {
+          unchangedCycles = 0;
+          intervalMs = 5000;
+        } else {
+          unchangedCycles += 1;
+          intervalMs = Math.min(20000, 5000 * (2 ** Math.min(2, unchangedCycles)));
+        }
+      } finally {
+        scheduleNext();
+      }
+    };
+
+    req.on('close', () => {
+      closed = true;
+      if (timer) clearTimeout(timer);
+    });
+
+    writeEvent('ready', { ok: true });
+    await pushLoop();
   });
 
   app.get('/api/clients', async (_req, res) => {
     try {
-      const brokerRes = await fetch(`${BROKER_URL}/clients/${uid}`, {
-        headers: sessionState.hostToken ? { 'x-host-token': sessionState.hostToken } : {}
-      });
-      if (!brokerRes.ok) {
-        const data = await brokerRes.json().catch(() => ({}));
-        return res.status(brokerRes.status).json({ error: data.error || 'Failed to fetch clients' });
-      }
-      const data = await brokerRes.json();
-      const clients = (data.clients || []).map((clientBlob) => {
-        try {
-          const decrypted = decrypt(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
-          const t = JSON.parse(decrypted);
-          return { ...t, seenAt: clientBlob.seenAt || null };
-        } catch {
-          return { error: 'decrypt_failed', seenAt: clientBlob.seenAt || null };
-        }
-      });
-      res.json({ clients });
+      const clients = await fetchDecryptedClients();
+      res.json(clients);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -487,10 +547,42 @@ updateUptime();
 
 // SSE for live updates
 const es = new EventSource('/api/events');
+let fallbackTimer = null;
+let fallbackDelay = 5000;
+
+function scheduleFallbackPoll() {
+  if (fallbackTimer) return;
+  fallbackTimer = setTimeout(async function pollFallback() {
+    fallbackTimer = null;
+    try {
+      const [approvalsRes, clientsRes] = await Promise.all([
+        fetch('/api/approvals'),
+        fetch('/api/clients')
+      ]);
+      if (approvalsRes.ok) renderApprovals((await approvalsRes.json()).approvals || []);
+      if (clientsRes.ok) renderClients((await clientsRes.json()).clients || []);
+    } catch {}
+    fallbackDelay = Math.min(20000, fallbackDelay * 2);
+    scheduleFallbackPoll();
+  }, fallbackDelay);
+}
+
+es.addEventListener('open', () => {
+  fallbackDelay = 5000;
+  if (fallbackTimer) clearTimeout(fallbackTimer);
+  fallbackTimer = null;
+});
+es.addEventListener('error', scheduleFallbackPoll);
 es.addEventListener('approvals', (e) => {
   try {
     const data = JSON.parse(e.data);
     renderApprovals(data.approvals || []);
+  } catch {}
+});
+es.addEventListener('clients', (e) => {
+  try {
+    const data = JSON.parse(e.data);
+    renderClients(data.clients || []);
   } catch {}
 });
 
@@ -557,16 +649,6 @@ async function revokeSession() {
   } catch (err) { showToast('Error: ' + err.message); }
 }
 
-// Poll client telemetry (separate from SSE for simplicity)
-async function pollClients() {
-  try {
-    const res = await fetch('/api/clients');
-    if (!res.ok) return;
-    const data = await res.json();
-    renderClients(data.clients || []);
-  } catch {}
-}
- 
 function renderClients(clients) {
   const container = document.getElementById('clients');
   if (!clients || clients.length === 0) {
@@ -596,8 +678,6 @@ function renderClients(clients) {
   container.innerHTML = html;
 }
  
-setInterval(pollClients, 5000);
-pollClients();
 </script>
 </body></html>`);
  });
@@ -672,9 +752,13 @@ async function spawnPrivateBroker() {
   trackPID(brokerProcess.pid);
 
   let brokerExited = false;
-  let brokerOutput = '';
+  const maxBrokerOutputBytes = 64 * 1024;
+  let brokerOutput = Buffer.alloc(0);
   brokerProcess.all?.on('data', chunk => {
-    brokerOutput += chunk.toString();
+    const next = Buffer.concat([brokerOutput, Buffer.from(chunk)]);
+    brokerOutput = next.length > maxBrokerOutputBytes
+      ? next.subarray(next.length - maxBrokerOutputBytes)
+      : next;
   });
   brokerProcess.on('exit', () => {
     brokerExited = true;
@@ -688,7 +772,8 @@ async function spawnPrivateBroker() {
 
   await waitForValue(() => {
     if (brokerExited) {
-      throw new Error(`Private broker exited before tunnel was ready${brokerOutput ? `: ${brokerOutput.trim()}` : ''}`);
+      const output = brokerOutput.toString('utf8').trim();
+      throw new Error(`Private broker exited before tunnel was ready${output ? `: ${output}` : ''}`);
     }
     return brokerTunnelUrl;
   }, 30000, 'Private broker tunnel startup');
@@ -798,7 +883,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
             for (const request of pending) {
               let details = {};
               try {
-                details = JSON.parse(decrypt(request.iv, request.ciphertext, password, request.salt));
+                details = JSON.parse(await decryptAsync(request.iv, request.ciphertext, password, request.salt));
               } catch {
                 details = { error: 'Could not decrypt request metadata' };
               }
@@ -938,10 +1023,10 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
             } else {
               spinner.succeed(`Found ${data.clients.length} recent connection(s):`);
 
-              data.clients.forEach((clientBlob, i) => {
+              for (const [i, clientBlob] of data.clients.entries()) {
                 try {
                   // Decrypt using the unique salt the client generated for this payload
-                  const decrypted = decrypt(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
+                  const decrypted = await decryptAsync(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
                   const t = JSON.parse(decrypted);
 
                   console.log(chalk.bold.blue(`\n  Client #${i + 1} (${t.username})`));
@@ -955,7 +1040,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
                   console.log(chalk.yellow(`\n  Client #${i + 1}: Payload decryption failed (wrong password or corrupted).`));
                   logSessionEvent('host_telemetry_decrypt_failed', { index: i + 1 }, 'warn');
                 }
-              });
+              }
             }
           } catch (e) {
             spinner.fail('Could not reach broker.');

@@ -1,7 +1,7 @@
 import chalk from 'chalk';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { decrypt, encrypt } from './crypto.js';
+import { decryptAsync, encryptAsync } from './crypto.js';
 import { createSpinner, cryptoSpinner, networkSpinner } from './animations.js';
 import { logSessionEvent } from './session-log.js';
 
@@ -51,7 +51,7 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
   try {
     await new Promise(r => setTimeout(r, 600));
     const payload = JSON.stringify({ url: tunnelUrl, ...serviceConfig });
-    const encrypted = encrypt(payload, password);
+    const encrypted = await encryptAsync(payload, password);
     const localHostToken = crypto.randomBytes(32).toString('hex');
 
     spinner.text = 'Registering with broker...';
@@ -92,7 +92,7 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
 }
 
 export async function requestHostApproval(brokerUrl, uid, password, details) {
-  const encrypted = encrypt(JSON.stringify(details), password);
+  const encrypted = await encryptAsync(JSON.stringify(details), password);
   const res = await fetchWithLog('approval_request', `${brokerUrl}/approval-request/${uid}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -209,7 +209,7 @@ export async function resolveUID(brokerUrl, uid, password, silent = false, reque
 
     let decryptedPayload;
     try {
-      decryptedPayload = decrypt(data.iv, data.ciphertext, password, data.salt);
+      decryptedPayload = await decryptAsync(data.iv, data.ciphertext, password, data.salt);
     } catch {
       if (spinner) spinner.fail('Decryption failed — incorrect password or corrupted data');
       if (!spinner) console.error(chalk.red('  ❌ Error: Could not decrypt tunnel data. Incorrect password.'));
@@ -269,7 +269,7 @@ export async function pushTelemetry(brokerUrl, uid, password, username, action =
       time: new Date().toISOString()
     };
 
-    const { iv, ciphertext, salt } = encrypt(JSON.stringify(telemetry), password);
+    const { iv, ciphertext, salt } = await encryptAsync(JSON.stringify(telemetry), password);
 
     await fetchWithLog('telemetry', `${parsed.origin}/client-info/${encodeURIComponent(uid)}`, {
       method: 'POST',

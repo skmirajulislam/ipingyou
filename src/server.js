@@ -96,8 +96,8 @@ const hostLimiter = rateLimit({
 });
 
 // ─── Active Defense & IP Blacklisting (IDS) ──────────────────
-const ipViolations = new Map(); // ip → violation_count
-const blacklistedIPs = new Set();
+const ipViolations = new Map(); // ip → { count, lastSeen }
+const blacklistedIPs = new Map(); // ip → bannedAt
 const VIOLATION_THRESHOLD = 5; // Block IP after 5 malicious requests
 
 app.use((req, res, next) => {
@@ -111,12 +111,12 @@ app.use((req, res, next) => {
 
 function recordViolation(req) {
   const ip = req.ip || req.connection.remoteAddress;
-  const count = (ipViolations.get(ip) || 0) + 1;
-  ipViolations.set(ip, count);
+  const count = (ipViolations.get(ip)?.count || 0) + 1;
+  ipViolations.set(ip, { count, lastSeen: Date.now() });
   console.warn(`🚨 Violation recorded for IP ${ip} (${count}/${VIOLATION_THRESHOLD})`);
   
   if (count >= VIOLATION_THRESHOLD) {
-    blacklistedIPs.add(ip);
+    blacklistedIPs.set(ip, Date.now());
     console.error(`💥 HACKING DETECTED: Auto-banned IP ${ip} to defend server.`);
   }
 }
@@ -126,6 +126,11 @@ const TTL_MS = 60 * 60 * 1000; // 1 hour
 const MAX_UIDS = 50000;        // Max concurrent tunnels (prevent memory leak)
 const MAX_VIOLATIONS = 50000;  // Max tracked malicious IPs before reset
 const MAX_RESOLVES_PER_UID = 100; // Max resolves before auto-revoke (anti-scraping)
+const MAX_APPROVALS_PER_UID = 50;
+const MAX_CLIENTS_PER_UID = 50;
+const APPROVAL_TTL_MS = TTL_MS;
+const TELEMETRY_TTL_MS = 30 * 60 * 1000;
+const VIOLATION_TTL_MS = 24 * 60 * 60 * 1000;
 const BROKER_SECRET = process.env.BROKER_HMAC_SECRET || crypto.randomBytes(32).toString('hex');
 
 const store = new Map(); // uid → { iv, ciphertext, salt, createdAt, clients: [], approvals: [], hostToken, resolveCount }
@@ -167,16 +172,33 @@ function pruneExpired() {
     if (now - entry.createdAt > TTL_MS) {
       store.delete(uid);
       console.log(`🗑️  Expired UID: ${uid}`);
+      continue;
     }
+    entry.approvals = entry.approvals
+      .filter(item => now - item.createdAt <= APPROVAL_TTL_MS)
+      .slice(-MAX_APPROVALS_PER_UID);
+    entry.clients = entry.clients
+      .filter(item => now - item.seenAt <= TELEMETRY_TTL_MS)
+      .slice(-MAX_CLIENTS_PER_UID);
   }
 
-  // Strict check to prevent malicious OOM overflow
-  if (ipViolations.size > MAX_VIOLATIONS) ipViolations.clear();
-  if (blacklistedIPs.size > MAX_VIOLATIONS) blacklistedIPs.clear();
+  for (const [ip, violation] of ipViolations) {
+    if (now - violation.lastSeen > VIOLATION_TTL_MS) ipViolations.delete(ip);
+  }
+  for (const [ip, bannedAt] of blacklistedIPs) {
+    if (now - bannedAt > VIOLATION_TTL_MS) blacklistedIPs.delete(ip);
+  }
+  while (ipViolations.size > MAX_VIOLATIONS) {
+    ipViolations.delete(ipViolations.keys().next().value);
+  }
+  while (blacklistedIPs.size > MAX_VIOLATIONS) {
+    blacklistedIPs.delete(blacklistedIPs.keys().next().value);
+  }
 }
 
 // Run pruning every 5 minutes
-setInterval(pruneExpired, 5 * 60 * 1000);
+const pruneTimer = setInterval(pruneExpired, 5 * 60 * 1000);
+pruneTimer.unref?.();
 
 // ─── Routes ──────────────────────────────────────────────────
 
@@ -355,7 +377,7 @@ app.post('/approval-request/:uid', generalLimiter, (req, res) => {
     };
 
     entry.approvals.push(request);
-    if (entry.approvals.length > 50) entry.approvals.shift();
+    if (entry.approvals.length > MAX_APPROVALS_PER_UID) entry.approvals.shift();
     res.json({ requestId: id, status: request.status, approvalRequired: entry.approvalRequired });
   } catch {
     res.status(500).json({ error: 'Internal server error' });
@@ -429,7 +451,7 @@ app.post('/client-info/:uid', generalLimiter, (req, res) => {
     entry.clients.push({ iv: req.body.iv, ciphertext: req.body.ciphertext, salt: req.body.salt, seenAt: Date.now() });
     
     // Keep max 50 recent client pings to prevent memory leaks
-    if (entry.clients.length > 50) entry.clients.shift();
+    if (entry.clients.length > MAX_CLIENTS_PER_UID) entry.clients.shift();
 
     res.json({ status: 'ok' });
   } catch (err) {
