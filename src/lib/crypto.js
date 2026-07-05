@@ -52,7 +52,8 @@ export async function encryptAsync(plaintext, password) {
       ciphertext: result.ciphertext,
       salt: result.salt,
     };
-  } catch {
+  } catch (err) {
+    if (err?.code === 'WORKER_QUEUE_FULL') throw err;
     return encrypt(plaintext, password);
   }
 }
@@ -81,7 +82,8 @@ export async function decryptAsync(ivHex, cipherBase64, password, saltHex) {
   try {
     const result = await runWorkerTask('decrypt', { ivHex, cipherBase64, password, saltHex });
     return result.plaintext;
-  } catch {
+  } catch (err) {
+    if (err?.code === 'WORKER_QUEUE_FULL') throw err;
     return decrypt(ivHex, cipherBase64, password, saltHex);
   }
 }

@@ -2,6 +2,7 @@ import { Worker } from 'node:worker_threads';
 
 const workerUrl = new URL('./workers/crypto-checksum-worker.js', import.meta.url);
 const workersDisabled = process.env.IPINGYOU_DISABLE_WORKERS === '1';
+const MAX_PENDING_TASKS = 128;
 
 let worker = null;
 let requestCounter = 0;
@@ -64,6 +65,11 @@ export function runWorkerTask(type, payload) {
   const activeWorker = ensureWorker();
   if (!activeWorker) {
     throw new Error('Worker is not available');
+  }
+  if (pending.size >= MAX_PENDING_TASKS) {
+    const error = new Error('Worker task queue is at capacity');
+    error.code = 'WORKER_QUEUE_FULL';
+    throw error;
   }
 
   const id = ++requestCounter;

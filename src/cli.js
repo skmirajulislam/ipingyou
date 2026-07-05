@@ -23,6 +23,7 @@ import inquirer from 'inquirer';
 import chalk from 'chalk';
 import fs from 'node:fs';
 import path from 'node:path';
+import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
 import { detectOS, checkDependencies } from './lib/platform.js';
@@ -474,25 +475,27 @@ program
         return;
       }
 
-      const raw = fs.readFileSync(logFile, 'utf8').trim();
-      if (!raw) {
-        console.log(chalk.dim('  Log file is empty.'));
-        return;
+      const parsedCount = Number.parseInt(commandOptions.lines, 10);
+      const count = Number.isFinite(parsedCount) ? Math.max(1, Math.min(parsedCount, 10000)) : 25;
+      const filter = commandOptions.type?.toLowerCase();
+      const events = [];
+      let totalEvents = 0;
+      const lines = readline.createInterface({
+        input: fs.createReadStream(logFile, { encoding: 'utf8' }),
+        crlfDelay: Infinity,
+      });
+      for await (const line of lines) {
+        if (!line.trim()) continue;
+        totalEvents += 1;
+        try {
+          const event = JSON.parse(line);
+          if (filter && !(event.type || '').toLowerCase().includes(filter)) continue;
+          events.push(event);
+          if (events.length > count) events.shift();
+        } catch {
+          // Ignore incomplete or invalid log lines.
+        }
       }
-
-      let events = raw.split('\n').map(line => {
-        try { return JSON.parse(line); } catch { return null; }
-      }).filter(Boolean);
-
-      // Filter by type if specified
-      if (commandOptions.type) {
-        const filter = commandOptions.type.toLowerCase();
-        events = events.filter(e => (e.type || '').toLowerCase().includes(filter));
-      }
-
-      // Take last N events
-      const count = parseInt(commandOptions.lines) || 25;
-      events = events.slice(-count);
 
       if (events.length === 0) {
         console.log(chalk.dim('  No matching events found.'));
@@ -526,7 +529,7 @@ program
 
       console.log('');
       console.log(chalk.dim(`  Log file: ${logFile}`));
-      console.log(chalk.dim(`  Total events in file: ${raw.split('\n').length}`));
+      console.log(chalk.dim(`  Total events in file: ${totalEvents}`));
     } catch (err) {
       fatal('history', err);
     }

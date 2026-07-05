@@ -22,7 +22,8 @@ export async function calculateChecksum(filePath) {
     try {
       const result = await runWorkerTask('checksum', { filePath });
       return result.digest || null;
-    } catch {
+    } catch (err) {
+      if (err?.code === 'WORKER_QUEUE_FULL') throw err;
       return calculateChecksumStream(filePath);
     }
   }

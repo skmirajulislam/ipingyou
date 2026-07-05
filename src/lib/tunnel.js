@@ -15,6 +15,7 @@ export async function spawnTunnelSupervised(targetUrl, onUrlGenerated) {
         activeChild = execa('cloudflared', ['tunnel', '--url', targetUrl], {
           reject: false,
           all: true,
+          buffer: false,
         });
 
         trackPID(activeChild.pid);

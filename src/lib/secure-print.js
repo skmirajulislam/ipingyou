@@ -18,6 +18,8 @@ import os from 'node:os';
 // Keyed secret for deterministic, non-reversible log masking tokens.
 // Can be overridden for stable cross-process correlation if needed.
 const MASKING_KEY = process.env.SECURE_PRINT_MASK_KEY || crypto.randomBytes(32).toString('hex');
+let lastMaskedFingerprint = null;
+let lastMaskedResult = null;
 
 /**
  * Verify the current process is being run by the same OS user interactively.
@@ -47,10 +49,14 @@ function isVerifiedHostUser() {
  */
 function maskSensitive(value) {
   const normalized = String(value);
+  const fingerprint = crypto.createHash('sha256').update(normalized).digest('hex');
+  if (fingerprint === lastMaskedFingerprint) return lastMaskedResult;
   const hash = crypto
     .pbkdf2Sync(MASKING_KEY, normalized, 210000, 32, 'sha256')
     .toString('hex');
-  return `[pbkdf2:${hash.slice(0, 12)}…]`;
+  lastMaskedFingerprint = fingerprint;
+  lastMaskedResult = `[pbkdf2:${hash.slice(0, 12)}…]`;
+  return lastMaskedResult;
 }
 
 /**

@@ -128,12 +128,17 @@ const MAX_VIOLATIONS = 50000;  // Max tracked malicious IPs before reset
 const MAX_RESOLVES_PER_UID = 100; // Max resolves before auto-revoke (anti-scraping)
 const MAX_APPROVALS_PER_UID = 50;
 const MAX_CLIENTS_PER_UID = 50;
+const configuredPayloadMb = Number.parseInt(process.env.BROKER_MAX_PAYLOAD_MB || '64', 10);
+const MAX_BUFFERED_PAYLOAD_BYTES = (
+  Number.isFinite(configuredPayloadMb) && configuredPayloadMb > 0 ? configuredPayloadMb : 64
+) * 1024 * 1024;
 const APPROVAL_TTL_MS = TTL_MS;
 const TELEMETRY_TTL_MS = 30 * 60 * 1000;
 const VIOLATION_TTL_MS = 24 * 60 * 60 * 1000;
 const BROKER_SECRET = process.env.BROKER_HMAC_SECRET || crypto.randomBytes(32).toString('hex');
 
 const store = new Map(); // uid → { iv, ciphertext, salt, createdAt, clients: [], approvals: [], hostToken, resolveCount }
+let bufferedPayloadBytes = 0;
 
 // ─── Security Helpers ────────────────────────────────────────
 const SAFE_PARAM = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -166,20 +171,42 @@ function isEncryptedPayload(body) {
     && /^[A-Za-z0-9+/]+={0,2}$/.test(body.ciphertext);
 }
 
+function encryptedPayloadBytes(payload) {
+  return Buffer.byteLength(payload?.ciphertext || '')
+    + Buffer.byteLength(payload?.iv || '')
+    + Buffer.byteLength(payload?.salt || '');
+}
+
+function entryPayloadBytes(entry) {
+  if (!entry) return 0;
+  return encryptedPayloadBytes(entry)
+    + entry.clients.reduce((sum, item) => sum + encryptedPayloadBytes(item), 0)
+    + entry.approvals.reduce((sum, item) => sum + encryptedPayloadBytes(item), 0);
+}
+
+function deleteStoreEntry(uid) {
+  const entry = store.get(uid);
+  if (!entry) return false;
+  bufferedPayloadBytes = Math.max(0, bufferedPayloadBytes - entryPayloadBytes(entry));
+  return store.delete(uid);
+}
+
 function pruneExpired() {
   const now = Date.now();
   for (const [uid, entry] of store) {
     if (now - entry.createdAt > TTL_MS) {
-      store.delete(uid);
+      deleteStoreEntry(uid);
       console.log(`🗑️  Expired UID: ${uid}`);
       continue;
     }
+    const previousBytes = entryPayloadBytes(entry);
     entry.approvals = entry.approvals
       .filter(item => now - item.createdAt <= APPROVAL_TTL_MS)
       .slice(-MAX_APPROVALS_PER_UID);
     entry.clients = entry.clients
       .filter(item => now - item.seenAt <= TELEMETRY_TTL_MS)
       .slice(-MAX_CLIENTS_PER_UID);
+    bufferedPayloadBytes = Math.max(0, bufferedPayloadBytes - previousBytes + entryPayloadBytes(entry));
   }
 
   for (const [ip, violation] of ipViolations) {
@@ -249,6 +276,11 @@ app.post('/register', strictLimiter, (req, res) => {
     if (store.size >= MAX_UIDS && !store.has(uid)) {
       return res.status(503).json({ error: 'Broker is at maximum capacity. Please try again later.' });
     }
+    const incomingBytes = encryptedPayloadBytes({ iv, ciphertext, salt });
+    const replacedBytes = entryPayloadBytes(store.get(uid));
+    if (bufferedPayloadBytes - replacedBytes + incomingBytes > MAX_BUFFERED_PAYLOAD_BYTES) {
+      return res.status(503).json({ error: 'Broker encrypted payload capacity reached. Please try again later.' });
+    }
 
     // Use provided host token if valid; otherwise generate a fresh one
     const hostToken = (typeof providedHostToken === 'string' && HOST_TOKEN_FORMAT.test(providedHostToken))
@@ -256,6 +288,7 @@ app.post('/register', strictLimiter, (req, res) => {
       : generateHostToken(uid + Date.now().toString());
 
     // Store the encrypted blob as-is — broker NEVER decrypts
+    if (store.has(uid)) deleteStoreEntry(uid);
     store.set(uid, {
       iv,
       ciphertext,
@@ -268,6 +301,7 @@ app.post('/register', strictLimiter, (req, res) => {
       hostToken,
       resolveCount: 0,
     });
+    bufferedPayloadBytes += incomingBytes;
 
     console.log(`✅ [${new Date().toLocaleTimeString()}] Registered UID: ${uid} (encrypted, ${ciphertext.length} bytes)`);
     // Return host token — this is the ONLY time it's sent; host must store it
@@ -299,19 +333,19 @@ app.get('/resolve/:uid', generalLimiter, (req, res) => {
 
     // Check TTL
     if (Date.now() - entry.createdAt > TTL_MS) {
-      store.delete(uid);
+      deleteStoreEntry(uid);
       return res.status(410).json({ error: 'UID expired' });
     }
 
     // Enforce one-time sharing: check BEFORE sending response (prevents race condition)
     if (entry.oneTime && entry.resolveCount > 0) {
-      store.delete(uid);
+      deleteStoreEntry(uid);
       return res.status(410).json({ error: 'One-time session already consumed' });
     }
 
     // Anti-scraping: cap total resolves per UID
     if (entry.resolveCount >= MAX_RESOLVES_PER_UID) {
-      store.delete(uid);
+      deleteStoreEntry(uid);
       return res.status(429).json({ error: 'Resolve limit exceeded — session revoked for security' });
     }
 
@@ -337,7 +371,7 @@ app.get('/resolve/:uid', generalLimiter, (req, res) => {
 
     // Enforce one-time sharing: auto-delete AFTER response sent
     if (entry.oneTime) {
-      store.delete(uid);
+      deleteStoreEntry(uid);
       console.log(`🔒 [${new Date().toLocaleTimeString()}] One-time UID ${uid} auto-revoked after first resolve`);
     }
   } catch (err) {
@@ -376,8 +410,18 @@ app.post('/approval-request/:uid', generalLimiter, (req, res) => {
       decidedAt: entry.approvalRequired ? null : Date.now(),
     };
 
+    const requestBytes = encryptedPayloadBytes(request);
+    const replacedBytes = entry.approvals.length >= MAX_APPROVALS_PER_UID
+      ? encryptedPayloadBytes(entry.approvals[0])
+      : 0;
+    if (bufferedPayloadBytes - replacedBytes + requestBytes > MAX_BUFFERED_PAYLOAD_BYTES) {
+      return res.status(503).json({ error: 'Broker encrypted payload capacity reached. Please try again later.' });
+    }
     entry.approvals.push(request);
-    if (entry.approvals.length > MAX_APPROVALS_PER_UID) entry.approvals.shift();
+    bufferedPayloadBytes += requestBytes;
+    if (entry.approvals.length > MAX_APPROVALS_PER_UID) {
+      bufferedPayloadBytes -= encryptedPayloadBytes(entry.approvals.shift());
+    }
     res.json({ requestId: id, status: request.status, approvalRequired: entry.approvalRequired });
   } catch {
     res.status(500).json({ error: 'Internal server error' });
@@ -448,10 +492,21 @@ app.post('/client-info/:uid', generalLimiter, (req, res) => {
       return res.status(400).json({ error: 'Invalid encrypted telemetry payload' });
     }
 
-    entry.clients.push({ iv: req.body.iv, ciphertext: req.body.ciphertext, salt: req.body.salt, seenAt: Date.now() });
+    const clientRecord = { iv: req.body.iv, ciphertext: req.body.ciphertext, salt: req.body.salt, seenAt: Date.now() };
+    const clientBytes = encryptedPayloadBytes(clientRecord);
+    const replacedBytes = entry.clients.length >= MAX_CLIENTS_PER_UID
+      ? encryptedPayloadBytes(entry.clients[0])
+      : 0;
+    if (bufferedPayloadBytes - replacedBytes + clientBytes > MAX_BUFFERED_PAYLOAD_BYTES) {
+      return res.status(503).json({ error: 'Broker encrypted payload capacity reached. Please try again later.' });
+    }
+    entry.clients.push(clientRecord);
+    bufferedPayloadBytes += clientBytes;
     
     // Keep max 50 recent client pings to prevent memory leaks
-    if (entry.clients.length > MAX_CLIENTS_PER_UID) entry.clients.shift();
+    if (entry.clients.length > MAX_CLIENTS_PER_UID) {
+      bufferedPayloadBytes -= encryptedPayloadBytes(entry.clients.shift());
+    }
 
     res.json({ status: 'ok' });
   } catch (err) {
@@ -492,7 +547,7 @@ app.delete('/revoke/:uid', strictLimiter, (req, res) => {
   const entry = store.get(uid);
   if (!entry) return res.json({ status: 'not_found' });
   if (!requireHostToken(req, res, entry)) return;
-  store.delete(uid);
+  deleteStoreEntry(uid);
   console.log(`🚫 [${new Date().toLocaleTimeString()}] Revoked UID: ${uid} (authenticated)`);
   res.json({ status: 'revoked' });
 });

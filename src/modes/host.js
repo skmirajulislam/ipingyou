@@ -278,6 +278,10 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
   const { default: open } = await import('open');
   const app = express();
   const startedAt = new Date().toISOString();
+  const decryptedClientCache = new Map();
+  const MAX_DECRYPTED_CLIENT_CACHE = 100;
+  const activeEventStreams = new Set();
+  const MAX_EVENT_STREAMS = 5;
 
   async function fetchDecryptedClients() {
     const brokerRes = await fetch(`${BROKER_URL}/clients/${uid}`, {
@@ -288,15 +292,28 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
       throw new Error(data.error || 'Failed to fetch clients');
     }
     const data = await brokerRes.json();
+    const activeCacheKeys = new Set();
     const decryptedClients = await Promise.all((data.clients || []).map(async (clientBlob) => {
+      const cacheKey = `${clientBlob.iv}:${clientBlob.salt}:${clientBlob.ciphertext}`;
+      activeCacheKeys.add(cacheKey);
+      const cached = decryptedClientCache.get(cacheKey);
+      if (cached) return { ...cached, seenAt: clientBlob.seenAt || null };
       try {
         const decrypted = await decryptAsync(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
         const t = JSON.parse(decrypted);
+        decryptedClientCache.set(cacheKey, t);
         return { ...t, seenAt: clientBlob.seenAt || null };
       } catch {
-        return { error: 'decrypt_failed', seenAt: clientBlob.seenAt || null };
+        const failed = { error: 'decrypt_failed' };
+        decryptedClientCache.set(cacheKey, failed);
+        return { ...failed, seenAt: clientBlob.seenAt || null };
       }
     }));
+    for (const key of decryptedClientCache.keys()) {
+      if (!activeCacheKeys.has(key) || decryptedClientCache.size > MAX_DECRYPTED_CLIENT_CACHE) {
+        decryptedClientCache.delete(key);
+      }
+    }
     return { clients: decryptedClients };
   }
 
@@ -326,6 +343,10 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
 
   // Server-Sent Events for live telemetry & approvals
   app.get('/api/events', async (req, res) => {
+    if (activeEventStreams.size >= MAX_EVENT_STREAMS) {
+      return res.status(503).json({ error: 'Too many dashboard event streams' });
+    }
+    activeEventStreams.add(res);
     res.set({ 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
     res.flushHeaders?.();
 
@@ -384,6 +405,7 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
 
     req.on('close', () => {
       closed = true;
+      activeEventStreams.delete(res);
       if (timer) clearTimeout(timer);
     });
 
@@ -748,6 +770,7 @@ async function spawnPrivateBroker() {
     env: { ...process.env, PORT: '4040' },
     reject: false,
     all: true,
+    buffer: false,
   });
   trackPID(brokerProcess.pid);
 

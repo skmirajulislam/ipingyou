@@ -221,6 +221,16 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
     const child = execa('scp', scpArgs, {
       stdio: ['inherit', 'pipe', 'pipe'],
       reject: false,
+      buffer: false,
+    });
+    const maxDiagnosticBytes = 64 * 1024;
+    let stderrOutput = Buffer.alloc(0);
+    child.stdout?.resume();
+    child.stderr?.on('data', (chunk) => {
+      const next = Buffer.concat([stderrOutput, Buffer.from(chunk)]);
+      stderrOutput = next.length > maxDiagnosticBytes
+        ? next.subarray(next.length - maxDiagnosticBytes)
+        : next;
     });
 
     trackPID(child.pid);
@@ -260,9 +270,10 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
       console.log(chalk.green(`  ✅ Transfer completed successfully!`));
       recordEvent('scp_transfer_success', { direction, localPath, remotePath, hostname });
     } else {
+      const stderr = stderrOutput.toString('utf8');
       console.error(chalk.red('  ❌ SCP transfer failed'));
-      if (result.stderr) console.error(chalk.dim(`     ${result.stderr.trim()}`));
-      recordEvent('scp_transfer_failed', { direction, localPath, remotePath, hostname, error: result.stderr });
+      if (stderr) console.error(chalk.dim(`     ${stderr.trim()}`));
+      recordEvent('scp_transfer_failed', { direction, localPath, remotePath, hostname, error: stderr });
     }
   } catch (err) {
     console.error(chalk.red(`  ❌ SCP error: ${err.message}`));
