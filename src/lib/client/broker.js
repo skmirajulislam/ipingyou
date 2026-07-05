@@ -1,9 +1,9 @@
 import chalk from 'chalk';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { decryptAsync, encryptAsync } from './crypto.js';
-import { createSpinner, cryptoSpinner, networkSpinner } from './animations.js';
-import { logSessionEvent } from './session-log.js';
+import { decryptAsync, encryptAsync } from '../mod/crypto.js';
+import { createSpinner, cryptoSpinner, networkSpinner } from '../mod/animations.js';
+import { logSessionEvent } from '../mod/session-log.js';
 
 async function fetchWithLog(action, endpoint, options = {}) {
   const method = options.method || 'GET';

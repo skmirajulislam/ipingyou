@@ -1,8 +1,8 @@
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
-import { openUrl } from './open-url.js';
+import { openUrl } from '../mod/open-url.js';
 import chalk from 'chalk';
-import { secureSensitiveUrl } from './secure-print.js';
+import { secureSensitiveUrl } from '../mod/secure-print.js';
 
 const HTML_CONTENT = `
 <!DOCTYPE html>

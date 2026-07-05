@@ -5,10 +5,10 @@ function assert(condition, message) {
 }
 
 const hostSource = fs.readFileSync(new URL('../src/modes/host.js', import.meta.url), 'utf8');
-const chatSource = fs.readFileSync(new URL('../src/lib/chat.js', import.meta.url), 'utf8');
+const chatSource = fs.readFileSync(new URL('../src/lib/services/chat.js', import.meta.url), 'utf8');
 const cliSource = fs.readFileSync(new URL('../src/cli.js', import.meta.url), 'utf8');
-const platformSource = fs.readFileSync(new URL('../src/lib/platform.js', import.meta.url), 'utf8');
-const cleanupSource = fs.readFileSync(new URL('../src/lib/cleanup.js', import.meta.url), 'utf8');
+const platformSource = fs.readFileSync(new URL('../src/lib/services/platform.js', import.meta.url), 'utf8');
+const cleanupSource = fs.readFileSync(new URL('../src/lib/mod/cleanup.js', import.meta.url), 'utf8');
 const packageJson = JSON.parse(
   fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')
 );

@@ -16,7 +16,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { cleanupSessionLog, initSessionLog, logSessionEvent } from './lib/session-log.js';
+import { cleanupSessionLog, initSessionLog, logSessionEvent } from './lib/mod/session-log.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));

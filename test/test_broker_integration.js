@@ -4,7 +4,7 @@
  * Requires: broker running on localhost:4000
  */
 
-import { encrypt, decrypt } from '../src/lib/crypto.js';
+import { encrypt, decrypt } from '../src/lib/mod/crypto.js';
 
 const BROKER = 'http://localhost:4000';
 

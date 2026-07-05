@@ -1,7 +1,7 @@
 import { execa } from 'execa';
 import chalk from 'chalk';
-import { createSpinner, tunnelSpinner } from './animations.js';
-import { killProcessTree, trackPID, untrackPID } from './cleanup.js';
+import { createSpinner, tunnelSpinner } from '../mod/animations.js';
+import { killProcessTree, trackPID, untrackPID } from '../mod/cleanup.js';
 
 export async function spawnTunnelSupervised(targetUrl, onUrlGenerated) {
   let isShuttingDown = false;

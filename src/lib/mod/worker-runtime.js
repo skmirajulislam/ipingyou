@@ -1,6 +1,6 @@
 import { Worker } from 'node:worker_threads';
 
-const workerUrl = new URL('./workers/crypto-checksum-worker.js', import.meta.url);
+const workerUrl = new URL('../workers/crypto-checksum-worker.js', import.meta.url);
 const workersDisabled = process.env.IPINGYOU_DISABLE_WORKERS === '1';
 const MAX_PENDING_TASKS = 128;
 

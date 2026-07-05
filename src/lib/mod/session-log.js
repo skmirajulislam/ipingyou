@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { redactSensitive } from './ai/safety.js';
+import { redactSensitive } from '../ai/safety.js';
 
 const LOG_DIR = path.join(os.homedir(), '.ipingyou', 'logs');
 const LOG_FILE = path.join(LOG_DIR, 'session-events.jsonl');

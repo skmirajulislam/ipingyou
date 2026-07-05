@@ -26,10 +26,10 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 
-import { detectOS, checkDependencies } from './lib/platform.js';
-import { cleanupAll, installShutdownHandlers, executePanicMode } from './lib/cleanup.js';
-import { cleanupSessionLog } from './lib/session-log.js';
-import { getSocketFirewallStatus, runProtectedNpmInstall } from './lib/socket-firewall.js';
+import { detectOS, checkDependencies } from './lib/services/platform.js';
+import { cleanupAll, installShutdownHandlers, executePanicMode } from './lib/mod/cleanup.js';
+import { cleanupSessionLog } from './lib/mod/session-log.js';
+import { getSocketFirewallStatus, runProtectedNpmInstall } from './lib/mod/socket-firewall.js';
 import { startHostMode } from './modes/host.js';
 import { startClientMode } from './modes/client.js';
 import { startAIMode } from './modes/ai.js';
@@ -414,7 +414,7 @@ program
       const fs = await import('node:fs');
       const os = await import('node:os');
       const path = await import('node:path');
-      const { ensureAllowlistFile, getAllowlistRegexes } = await import('./lib/allowlist.js');
+      const { ensureAllowlistFile, getAllowlistRegexes } = await import('./lib/mod/allowlist.js');
 
       const allowlistPath = ensureAllowlistFile();
 

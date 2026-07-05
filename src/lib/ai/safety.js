@@ -1,4 +1,4 @@
-import { getAllowlistRegexes } from '../allowlist.js';
+import { getAllowlistRegexes } from '../mod/allowlist.js';
 
 const SECRET_PATTERNS = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,

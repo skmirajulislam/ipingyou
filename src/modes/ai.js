@@ -8,16 +8,16 @@ import inquirer from 'inquirer';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { getAlias } from '../lib/config.js';
-import { resolveUID } from '../lib/broker.js';
-import { buildSshArgs, extractHostname, quoteRemoteShell } from '../lib/ssh.js';
-import { addCleanupHook, cleanupAll } from '../lib/cleanup.js';
+import { getAlias } from '../lib/mod/config.js';
+import { resolveUID } from '../lib/client/broker.js';
+import { buildSshArgs, extractHostname, quoteRemoteShell } from '../lib/services/ssh.js';
+import { addCleanupHook, cleanupAll } from '../lib/mod/cleanup.js';
 import { startHostMode } from './host.js';
 import { startClientMode } from './client.js';
 import { performSCPNonInteractive } from './client.js';
 import { DEFAULT_AI_MODEL, createGroqChatCompletion, getGroqApiKey, getRateLimitWarnings, listGroqModels, estimateTokensForMessages } from '../lib/ai/groq.js';
 import { assertSafeReadablePath, classifyCommand, redactSensitive, sanitizeUserTask, truncateForModel } from '../lib/ai/safety.js';
-import { recordEvent } from '../lib/session-log.js';
+import { recordEvent } from '../lib/mod/session-log.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
 
@@ -650,7 +650,7 @@ async function tryAITransfer(task, context) {
   if (context && context.scope === 'remote' && context.hostname && context.username) {
     console.log(chalk.dim(`  Using active remote session: ${context.username}@${context.hostname}`));
 
-    const { buildProxyCommandOption, getSshControlOptions, formatScpRemotePath } = await import('../lib/ssh.js');
+    const { buildProxyCommandOption, getSshControlOptions, formatScpRemotePath } = await import('../lib/services/ssh.js');
     const scpArgs = [
       '-r',
       ...buildProxyCommandOption(context.hostname),

@@ -18,16 +18,16 @@ import inquirer from 'inquirer';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { cleanupAll, trackPID, untrackPID, addCleanupHook } from '../lib/cleanup.js';
-import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, simulateTransferProgress } from '../lib/animations.js';
-import { getConfig, saveAlias } from '../lib/config.js';
-import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval } from '../lib/broker.js';
-import { calculateChecksum } from '../lib/checksum.js';
-import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
-import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
-import { openUrl } from '../lib/open-url.js';
-import { secureSensitiveUrl } from '../lib/secure-print.js';
-import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
+import { cleanupAll, trackPID, untrackPID, addCleanupHook } from '../lib/mod/cleanup.js';
+import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, simulateTransferProgress } from '../lib/mod/animations.js';
+import { getConfig, saveAlias } from '../lib/mod/config.js';
+import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval } from '../lib/client/broker.js';
+import { calculateChecksum } from '../lib/mod/checksum.js';
+import { promptLocalPath, promptRemotePath } from '../lib/client/path-browser.js';
+import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/services/ssh.js';
+import { openUrl } from '../lib/mod/open-url.js';
+import { secureSensitiveUrl } from '../lib/mod/secure-print.js';
+import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/mod/session-log.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
 

@@ -2,7 +2,7 @@
  * E2E Encryption Proof — Verifies broker is zero-knowledge
  */
 
-import { encrypt, decrypt } from '../src/lib/crypto.js';
+import { encrypt, decrypt } from '../src/lib/mod/crypto.js';
 import crypto from 'node:crypto';
 
 console.log('');

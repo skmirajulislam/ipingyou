@@ -1,8 +1,8 @@
-import { ensureAllowlistFile, getAllowlistRegexes } from '../src/lib/allowlist.js';
+import { ensureAllowlistFile, getAllowlistRegexes } from '../src/lib/mod/allowlist.js';
 import { estimateTokensForMessages } from '../src/lib/ai/groq.js';
 import { assertSafeReadablePath, classifyCommand } from '../src/lib/ai/safety.js';
 import { parseLocalCommand } from '../src/modes/ai.js';
-import { formatScpRemotePath } from '../src/lib/ssh.js';
+import { formatScpRemotePath } from '../src/lib/services/ssh.js';
 
 async function run() {
     console.log('\nAI Helpers Test');

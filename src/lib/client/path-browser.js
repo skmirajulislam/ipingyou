@@ -4,7 +4,7 @@ import inquirer from 'inquirer';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { buildSshArgs, formatRemoteCd } from './ssh.js';
+import { buildSshArgs, formatRemoteCd } from '../services/ssh.js';
 
 class RemoteDirectoryError extends Error {
   constructor(message, remoteDir, stderr = '') {

@@ -7,8 +7,8 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commandExists, detectOS, isLinuxSSHActive } from '../lib/platform.js';
-import { pingBroker } from '../lib/broker.js';
+import { commandExists, detectOS, isLinuxSSHActive } from '../lib/services/platform.js';
+import { pingBroker } from '../lib/client/broker.js';
 import { classifyCommand, redactSensitive } from '../lib/ai/safety.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
