@@ -13,7 +13,13 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { cleanupSessionLog, initSessionLog, logSessionEvent } from './lib/session-log.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '../package.json'), 'utf8'));
 
 const app = express();
 const brokerLogPath = initSessionLog('broker');
@@ -359,6 +365,30 @@ app.get('/resolve/:uid', generalLimiter, (req, res) => {
       if (!approved) {
         return res.status(423).json({ error: 'Host approval required before resolving this session' });
       }
+      
+      // Client-specific E2E gating: verify client IP matches approved request IP
+      const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+      if (approved.ip && approved.ip !== clientIp) {
+        return res.status(403).json({ error: 'Client IP mismatch — access denied' });
+      }
+
+      if (approved.approvedPayload) {
+        entry.resolveCount = (entry.resolveCount || 0) + 1;
+        console.log(`🔍 [${new Date().toLocaleTimeString()}] Resolved UID (Client Specific): ${uid} (resolve #${entry.resolveCount})`);
+        res.json({
+          uid,
+          iv: approved.approvedPayload.iv,
+          ciphertext: approved.approvedPayload.ciphertext,
+          salt: approved.approvedPayload.salt,
+          isClientSpecific: true,
+          ip: clientIp
+        });
+        
+        if (entry.oneTime) {
+          deleteStoreEntry(uid);
+        }
+        return;
+      }
     }
 
     // Increment resolve counter atomically BEFORE sending response
@@ -400,6 +430,7 @@ app.post('/approval-request/:uid', generalLimiter, (req, res) => {
 
     // Generate cryptographically secure request ID
     const id = crypto.randomBytes(12).toString('hex');
+    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
     const request = {
       id,
       iv: req.body.iv,
@@ -408,6 +439,7 @@ app.post('/approval-request/:uid', generalLimiter, (req, res) => {
       status: entry.approvalRequired ? 'pending' : 'approved',
       createdAt: Date.now(),
       decidedAt: entry.approvalRequired ? null : Date.now(),
+      ip,
     };
 
     const requestBytes = encryptedPayloadBytes(request);
@@ -439,6 +471,7 @@ app.get('/approval-requests/:uid', hostLimiter, (req, res) => {
   const sanitized = entry.approvals.map(a => ({
     id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt,
     iv: a.iv, ciphertext: a.ciphertext, salt: a.salt,
+    ip: a.ip,
   }));
   res.json({ approvalRequired: entry.approvalRequired, approvals: sanitized });
 });
@@ -461,6 +494,14 @@ app.post('/approval-requests/:uid/:requestId/:decision', strictLimiter, (req, re
 
   request.status = req.params.decision;
   request.decidedAt = Date.now();
+  
+  if (req.params.decision === 'approved' && req.body && req.body.ciphertext) {
+    request.approvedPayload = {
+      iv: req.body.iv,
+      ciphertext: req.body.ciphertext,
+      salt: req.body.salt
+    };
+  }
   res.json({ status: request.status });
 });
 
@@ -473,8 +514,13 @@ app.get('/approval-status/:uid/:requestId', generalLimiter, (req, res) => {
   if (!entry) return res.status(404).json({ error: 'UID not found' });
   const request = entry.approvals.find(item => item.id === req.params.requestId);
   if (!request) return res.status(404).json({ error: 'Request not found' });
-  // Only return status — never leak encrypted approval data
-  res.json({ status: request.status });
+  
+  const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  res.json({
+    status: request.status,
+    ip: clientIp,
+    approvedPayload: request.status === 'approved' ? request.approvedPayload : undefined
+  });
 });
 
 /**
@@ -571,7 +617,7 @@ const HOST = process.env.HOST || '0.0.0.0';
 app.listen(PORT, HOST, () => {
   console.log('');
   console.log('  ╔══════════════════════════════════════════╗');
-  console.log('  ║   🔗  SecureLink Broker — Active         ║');
+  console.log(`  ║   🔗  SecureLink Broker — Active (v${packageJson.version})`.padEnd(45) + '║');
   console.log(`  ║   📡  Port: ${String(PORT).padEnd(29)}║`);
   console.log('  ║   🔒  Zero-Knowledge Encrypted Store     ║');
   console.log('  ║   ⏱️   TTL: 1 hour per UID                ║');

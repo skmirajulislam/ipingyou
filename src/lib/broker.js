@@ -115,11 +115,11 @@ export async function waitForApproval(brokerUrl, uid, requestId, timeoutMs = 300
       const data = await res.json();
       if (data.status === 'approved') {
         logSessionEvent('approval_granted', { uid, requestId });
-        return true;
+        return { approved: true, ip: data.ip, approvedPayload: data.approvedPayload };
       }
       if (data.status === 'denied') {
         logSessionEvent('approval_denied', { uid, requestId });
-        return false;
+        return { approved: false };
       }
     }
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -140,10 +140,15 @@ export async function fetchApprovalRequests(brokerUrl, uid, hostToken) {
   return res.json();
 }
 
-export async function decideApprovalRequest(brokerUrl, uid, requestId, decision, hostToken) {
+export async function decideApprovalRequest(brokerUrl, uid, requestId, decision, hostToken, approvedPayload = null) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(hostToken ? { 'x-host-token': hostToken } : {})
+  };
   const res = await fetchWithLog('approval_decision', `${brokerUrl}/approval-requests/${uid}/${requestId}/${decision}`, {
     method: 'POST',
-    headers: hostToken ? { 'x-host-token': hostToken } : {},
+    headers,
+    body: approvedPayload ? JSON.stringify(approvedPayload) : undefined,
   });
   if (!res.ok) {
     const data = await res.json().catch(() => ({}));
@@ -209,7 +214,18 @@ export async function resolveUID(brokerUrl, uid, password, silent = false, reque
 
     let decryptedPayload;
     try {
-      decryptedPayload = await decryptAsync(data.iv, data.ciphertext, password, data.salt);
+      let decPassword = password;
+      if (data.isClientSpecific) {
+        const clientKeySalt = [
+          password,
+          data.ip || 'unknown',
+          os.userInfo().username,
+          os.hostname(),
+          `${os.type()} ${os.release()} (${os.arch()})`
+        ].join('|');
+        decPassword = crypto.createHash('sha256').update(clientKeySalt).digest('hex');
+      }
+      decryptedPayload = await decryptAsync(data.iv, data.ciphertext, decPassword, data.salt);
     } catch {
       if (spinner) spinner.fail('Decryption failed — incorrect password or corrupted data');
       if (!spinner) console.error(chalk.red('  ❌ Error: Could not decrypt tunnel data. Incorrect password.'));

@@ -125,14 +125,23 @@ export function logSessionEvent(type, details = {}, level = 'info') {
 }
 
 export function cleanupSessionLog() {
-  if (!sessionLogPath) return;
-  flushSessionLog();
-  const target = sessionLogPath;
-  sessionLogPath = null;
+  if (sessionLogPath) {
+    flushSessionLog();
+    const target = sessionLogPath;
+    sessionLogPath = null;
+    try {
+      if (fs.existsSync(target)) fs.unlinkSync(target);
+    } catch (err) {
+      console.error(`Session log cleanup failed: ${err.message}`);
+    }
+  }
+
   try {
-    if (fs.existsSync(target)) fs.unlinkSync(target);
-  } catch (err) {
-    console.error(`Session log cleanup failed: ${err.message}`);
+    if (fs.existsSync(LOG_DIR)) {
+      fs.rmSync(LOG_DIR, { recursive: true, force: true });
+    }
+  } catch {
+    // Best-effort directory removal
   }
 }
 

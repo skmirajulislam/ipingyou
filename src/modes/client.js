@@ -25,12 +25,49 @@ import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForAppro
 import { calculateChecksum } from '../lib/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/path-browser.js';
 import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/ssh.js';
-import { buildTmuxSessionName, TMUX_SOCKET_PATH } from '../lib/tmux.js';
 import { openUrl } from '../lib/open-url.js';
 import { secureSensitiveUrl } from '../lib/secure-print.js';
 import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
 
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
+
+function startLiveLogSync(username, hostname, privateKeyPath, remoteDropPath, localLogPath, persistKnownHosts = true) {
+  if (!remoteDropPath || !localLogPath) return;
+
+  let lastContent = '';
+  const interval = setInterval(async () => {
+    try {
+      if (!fs.existsSync(localLogPath)) return;
+      const content = fs.readFileSync(localLogPath, 'utf8');
+      if (content === lastContent) return;
+
+      const scpArgs = [
+        '-O',
+        ...buildProxyCommandOption(hostname),
+        ...getKnownHostsOptions(persistKnownHosts),
+        '-o', 'IdentitiesOnly=yes',
+        ...getSshControlOptions(hostname)
+      ];
+      if (privateKeyPath) {
+        scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
+      }
+
+      const clientName = `${os.userInfo().username}-${os.hostname()}`;
+      const remoteFilePath = `${remoteDropPath}/client-${clientName}.log`;
+
+      scpArgs.push(localLogPath, `${username}@${hostname}:${formatScpRemotePath(remoteFilePath)}`);
+
+      const result = await execa('scp', scpArgs, { reject: false });
+      if (result.exitCode === 0) {
+        lastContent = content;
+      }
+    } catch {
+      // Ignore background sync failures silently
+    }
+  }, 3000);
+
+  addCleanupHook(() => clearInterval(interval));
+}
 
 async function promptUsername() {
   const { username } = await inquirer.prompt([
@@ -94,18 +131,11 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
 
     const sshArgs = buildSshArgs(hostname, privateKeyPath, [
       '-o', 'ServerAliveInterval=30',
-      '-o', 'ServerAliveCountMax=3'
+      '-o', 'ServerAliveCountMax=3',
+      '-t'
     ], { persistKnownHosts });
 
     sshArgs.push(`${username}@${hostname}`);
-    const tmuxSession = buildTmuxSessionName(username);
-    const quotedSocket = quoteRemoteShell(TMUX_SOCKET_PATH);
-    const quotedSession = quoteRemoteShell(tmuxSession);
-    const tmuxSocketCmdStr = `tmux -S ${quotedSocket}`;
-    const tmuxPrepare = `${tmuxSocketCmdStr} has-session -t ${quotedSession} 2>/dev/null || ${tmuxSocketCmdStr} new-session -d -s ${quotedSession}`;
-    const tmuxAttach = `${tmuxSocketCmdStr} attach -t ${quotedSession}`;
-    const tmuxCommand = `if command -v tmux >/dev/null 2>&1; then (${tmuxPrepare} && ${tmuxAttach}) || exec $SHELL -l; else exec $SHELL -l; fi`;
-    sshArgs.push('-t', tmuxCommand);
 
     const child = execa('ssh', sshArgs, {
       stdio: 'inherit',
@@ -199,6 +229,7 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
   // Construct SCP args
   const scpArgs = [
     '-r', // recursive just in case
+    '-O', // Force legacy SCP protocol so that shell quoting in formatScpRemotePath works correctly
     ...buildProxyCommandOption(hostname),
     ...getKnownHostsOptions(persistKnownHosts),
     '-o', 'IdentitiesOnly=yes',
@@ -293,6 +324,7 @@ async function downloadSpecificRemotePath(username, hostname, privateKeyPath, re
   await showConnectionTrace('Local', 'Remote SCP');
   const scpArgs = [
     '-r',
+    '-O', // Force legacy SCP protocol
     ...buildProxyCommandOption(hostname),
     ...getKnownHostsOptions(persistKnownHosts),
     '-o', 'IdentitiesOnly=yes',
@@ -435,12 +467,27 @@ export async function startClientMode(options = {}) {
     console.log(chalk.dim('  The host has enabled approval gating. Submitting your access request...'));
 
     try {
+      let localIp = '127.0.0.1';
+      try {
+        const interfaces = os.networkInterfaces();
+        for (const devName in interfaces) {
+          const iface = interfaces[devName];
+          for (const alias of iface) {
+            if (alias.family === 'IPv4' && !alias.internal) {
+              localIp = alias.address;
+              break;
+            }
+          }
+        }
+      } catch {}
+
       const approvalDetails = {
         username: os.userInfo().username,
         hostname: os.hostname(),
         os: `${os.type()} ${os.release()} (${os.arch()})`,
         intent: 'connect',
         time: new Date().toISOString(),
+        localIp,
       };
 
       const { requestId, status: reqStatus, approvalRequired } = await requestHostApproval(
@@ -457,9 +504,9 @@ export async function startClientMode(options = {}) {
         console.log(chalk.dim('     This may take a few minutes. Press Ctrl+C to cancel.'));
         console.log('');
 
-        const approved = await waitForApproval(BROKER_URL, targetUid, requestId, 300000);
+        const approvalResult = await waitForApproval(BROKER_URL, targetUid, requestId, 300000);
 
-        if (approved) {
+        if (approvalResult && approvalResult.approved) {
           console.log(chalk.green('  ✅ Host approved your access request!'));
           logSessionEvent('client_approval_granted', { uid: targetUid, requestId });
           payload = await resolveUID(BROKER_URL, targetUid, targetPassword, false, requestId);
@@ -558,6 +605,11 @@ export async function startClientMode(options = {}) {
       logSessionEvent('client_ephemeral_key_failed', { error: err.message }, 'warn');
       privateKeyPath = null;
     }
+  }
+
+  // Start background E2E client log sync if sharedDropPath is configured
+  if (payload.sharedDropPath && sessionLogPath) {
+    startLiveLogSync(username, hostname, privateKeyPath, payload.sharedDropPath, sessionLogPath, persistKnownHosts);
   }
 
   // ─── One-Time File Share Auto-Download ────────────────────
@@ -684,7 +736,7 @@ export async function performSCPNonInteractive(params = {}) {
   const privateKeyPath = payload.privateKey ? await writeEphemeralPrivateKey(payload.privateKey) : null;
 
   // Build scp args similar to performSCP
-  const scpArgs = ['-r', ...buildProxyCommandOption(hostname), ...getKnownHostsOptions(persistKnownHosts), '-o', 'IdentitiesOnly=yes', ...getSshControlOptions(hostname)];
+  const scpArgs = ['-r', '-O', ...buildProxyCommandOption(hostname), ...getKnownHostsOptions(persistKnownHosts), '-o', 'IdentitiesOnly=yes', ...getSshControlOptions(hostname)];
   if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
 
   const remoteSpec = `${username}@${hostname}:${formatScpRemotePath(remotePath)}`;

@@ -102,7 +102,7 @@ function showBanner() {
 function showSystemInfo() {
   const osInfo = detectOS();
   const platform = osInfo.isLinux ? '🐧 Linux' : osInfo.isMac ? '🍎 macOS' : '🪟 Windows';
-  console.log(chalk.dim(`  ${platform}  |  ${osInfo.arch}  |  ${osInfo.hostname}  |  Node ${process.version}`));
+  console.log(chalk.dim(`  ${platform}  |  ${osInfo.arch}  |  ${osInfo.hostname}  |  Node ${process.version}  |  v${packageJson.version}`));
   console.log('');
 }
 

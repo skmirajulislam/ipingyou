@@ -24,16 +24,15 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { generateUID } from '../lib/uid.js';
 import { openUrl } from '../lib/open-url.js';
-import { decryptAsync } from '../lib/crypto.js';
+import { decryptAsync, encryptAsync } from '../lib/crypto.js';
 import { cleanupAll, killProcessTree, trackPID, untrackPID, setRevokeOnExit, addCleanupHook } from '../lib/cleanup.js';
-import { detectOS } from '../lib/platform.js';
+import { detectOS, isLinuxSSHActive, startLinuxSSH } from '../lib/platform.js';
 import { createSpinner, networkSpinner, typeText } from '../lib/animations.js';
 import { startChatServer, openLocalChatUI } from '../lib/chat.js';
 import { secureSensitive } from '../lib/secure-print.js';
 import { spawnTunnelSupervised } from '../lib/tunnel.js';
 import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID } from '../lib/broker.js';
 import { cleanupSessionLog, getSessionLogPath, initSessionLog, logSessionEvent, recordEvent } from '../lib/session-log.js';
-import { TMUX_SESSION_NAME, TMUX_SESSION_PREFIX, tmuxSocketArgs } from '../lib/tmux.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -68,18 +67,13 @@ async function ensureSSHRunning() {
 
   try {
     if (osInfo.isLinux) {
-      try {
-        await execa('systemctl', ['is-active', 'ssh'], { reject: true });
+      const active = await isLinuxSSHActive();
+      if (active) {
         spinner.succeed('SSH service is active');
-      } catch {
+      } else {
         spinner.text = 'Starting SSH service...';
-        try {
-          await execa('sudo', ['systemctl', 'start', 'ssh'], { stdio: 'inherit' });
-          spinner.succeed('SSH service started');
-        } catch {
-          await execa('sudo', ['systemctl', 'start', 'sshd'], { stdio: 'inherit' });
-          spinner.succeed('SSH service started (sshd)');
-        }
+        await startLinuxSSH();
+        spinner.succeed('SSH service started');
       }
     } else if (osInfo.isMac) {
       try {
@@ -116,80 +110,124 @@ async function ensureSSHRunning() {
   }
 }
 
-/**
- * Ensure tmux is installed for terminal mirroring.
- */
-async function ensureTmuxInstalled() {
-  const osInfo = detectOS();
-  if (osInfo.isWindows) return;
-
-  const spinner = createSpinner('Checking tmux installation...', networkSpinner).start();
+function formatAndPrintLogLine(line) {
   try {
-    try {
-      await execa('tmux', ['-V'], { reject: true });
-      spinner.succeed('tmux is installed (Terminal Mirroring available)');
-    } catch {
-      spinner.text = 'tmux not found. Attempting to install...';
-      if (osInfo.isLinux) {
-        if (fs.existsSync('/usr/bin/apt') || fs.existsSync('/usr/bin/apt-get')) {
-          await execa('sudo', ['apt-get', 'update', '-qq'], { stdio: 'inherit' });
-          await execa('sudo', ['apt-get', 'install', '-y', 'tmux'], { stdio: 'inherit' });
-        } else if (fs.existsSync('/usr/bin/dnf')) {
-          await execa('sudo', ['dnf', 'install', '-y', 'tmux'], { stdio: 'inherit' });
-        } else if (fs.existsSync('/usr/bin/yum')) {
-          await execa('sudo', ['yum', 'install', '-y', 'tmux'], { stdio: 'inherit' });
-        } else if (fs.existsSync('/usr/bin/pacman')) {
-          await execa('sudo', ['pacman', '-S', '--noconfirm', 'tmux'], { stdio: 'inherit' });
-        } else if (fs.existsSync('/sbin/apk')) {
-          await execa('sudo', ['apk', 'add', 'tmux'], { stdio: 'inherit' });
-        } else {
-          throw new Error('Unsupported Linux package manager');
-        }
-        spinner.succeed('tmux installed successfully (Terminal Mirroring available)');
-      } else if (osInfo.isMac) {
-        try {
-          await execa('brew', ['install', 'tmux'], { stdio: 'inherit' });
-          spinner.succeed('tmux installed successfully (Terminal Mirroring available)');
-        } catch {
-          throw new Error('Homebrew is required to install tmux on macOS');
-        }
-      }
+    const data = JSON.parse(line);
+    const time = new Date(data.timestamp).toLocaleTimeString();
+    const typeLabel = chalk.bold(data.type);
+    
+    let color = chalk.white;
+    let icon = 'ℹ️';
+    if (data.level === 'warn') {
+      color = chalk.yellow;
+      icon = '⚠️';
+    } else if (data.level === 'error') {
+      color = chalk.red;
+      icon = '❌';
+    } else if (data.type.includes('success') || data.type.includes('complete') || data.type.includes('granted') || data.type.includes('start')) {
+      color = chalk.green;
+      icon = '✓';
     }
-  } catch (err) {
-    spinner.fail(`tmux check/install failed: ${err.message}`);
-    console.log(chalk.dim('  Terminal Mirroring feature will not be available.'));
+
+    const detailsStr = Object.keys(data.details || {}).length > 0 
+      ? chalk.dim(JSON.stringify(data.details))
+      : '';
+      
+    console.log(`  [${chalk.dim(time)}] ${color(icon)} ${color(typeLabel)} ${detailsStr}`);
+  } catch {
+    if (line.trim()) {
+      console.log(`  ${chalk.dim(line)}`);
+    }
   }
 }
 
-function isSecureLinkSession(name) {
-  return name === TMUX_SESSION_NAME || name.startsWith(TMUX_SESSION_PREFIX);
-}
+async function viewLiveClientLogs(sharedDropPath) {
+  if (!sharedDropPath) {
+    console.log(chalk.red('  ❌ Error: Shared drop path is not configured.'));
+    return;
+  }
 
-async function listTmuxSessions(socketArgs = []) {
-  const result = await execa('tmux', [...socketArgs, 'list-sessions', '-F', '#{session_name}|#{session_created}'], { reject: false });
-  if (result.exitCode !== 0) return [];
-  return result.stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map(line => {
-      const [name, createdAt] = line.split('|');
-      return { name, createdAt: Number(createdAt) || null };
-    });
-}
+  try {
+    const files = await fs.promises.readdir(sharedDropPath);
+    const clientLogs = files.filter(f => f.startsWith('client-') && f.endsWith('.log'));
+    
+    if (clientLogs.length === 0) {
+      console.log(chalk.yellow('\n  No active client logs found in the shared drop folder.'));
+      console.log(chalk.dim('     Clients automatically share their logs once connected.'));
+      return;
+    }
 
-async function getMirrorableSessions() {
-  const sessions = [];
-  const customSessions = await listTmuxSessions(tmuxSocketArgs());
-  customSessions
-    .filter(s => isSecureLinkSession(s.name))
-    .forEach(s => sessions.push({ ...s, socketArgs: tmuxSocketArgs(), source: 'custom' }));
+    const { selectedLog } = await inquirer.prompt([
+      {
+        type: 'list',
+        name: 'selectedLog',
+        message: 'Select a client to monitor activity in live:',
+        choices: clientLogs.map(f => {
+          const clientName = f.replace('client-', '').replace('.log', '');
+          return { name: `👤 ${clientName}`, value: f };
+        })
+      }
+    ]);
 
-  const legacySessions = await listTmuxSessions();
-  legacySessions
-    .filter(s => isSecureLinkSession(s.name))
-    .forEach(s => sessions.push({ ...s, socketArgs: [], source: 'legacy' }));
+    const logFilePath = path.join(sharedDropPath, selectedLog);
+    const clientName = selectedLog.replace('client-', '').replace('.log', '');
+    
+    console.log('');
+    console.log(chalk.bold.cyan(`  📊 Live Monitor: ${clientName}`));
+    console.log(chalk.dim('  ──────────────────────────────────────────────────'));
+    console.log(chalk.dim('  Showing log stream. Press Enter to exit.'));
+    console.log('');
 
-  return sessions;
+    let filePosition = 0;
+    let keepWatching = true;
+
+    if (fs.existsSync(logFilePath)) {
+      const stats = fs.statSync(logFilePath);
+      filePosition = stats.size;
+      const content = fs.readFileSync(logFilePath, 'utf8');
+      const lines = content.split('\n').filter(Boolean);
+      const lastLines = lines.slice(-10);
+      for (const line of lastLines) {
+        formatAndPrintLogLine(line);
+      }
+    }
+
+    const intervalId = setInterval(() => {
+      if (!keepWatching) return;
+      try {
+        if (!fs.existsSync(logFilePath)) return;
+        const stats = fs.statSync(logFilePath);
+        if (stats.size > filePosition) {
+          const fd = fs.openSync(logFilePath, 'r');
+          const bufferSize = stats.size - filePosition;
+          const buffer = Buffer.alloc(bufferSize);
+          fs.readSync(fd, buffer, 0, bufferSize, filePosition);
+          fs.closeSync(fd);
+
+          filePosition = stats.size;
+          const newContent = buffer.toString('utf8');
+          const lines = newContent.split('\n').filter(Boolean);
+          for (const line of lines) {
+            formatAndPrintLogLine(line);
+          }
+        }
+      } catch {
+        // Ignore file access errors
+      }
+    }, 1000);
+
+    await inquirer.prompt([{
+      type: 'input',
+      name: 'exit',
+      message: 'Press Enter to stop monitoring...'
+    }]);
+
+    keepWatching = false;
+    clearInterval(intervalId);
+    console.log(chalk.cyan('  Stopped monitoring client logs.'));
+  } catch (err) {
+    console.log(chalk.red(`  Could not read client logs: ${err.message}`));
+  }
 }
 
 // ─── Ephemeral SSH Key Management ────────────────────────────
@@ -219,6 +257,9 @@ async function injectPublicKey(pubKey) {
   if (!fs.existsSync(sshDir)) {
     await fs.promises.mkdir(sshDir, { mode: 0o700, recursive: true });
   }
+  try {
+    await fs.promises.chmod(sshDir, 0o700);
+  } catch {}
 
   const authKeysPath = path.join(sshDir, 'authorized_keys');
   const existing = await fs.promises.lstat(authKeysPath).catch(() => null);
@@ -227,20 +268,47 @@ async function injectPublicKey(pubKey) {
   }
   const authorizedKey = `no-agent-forwarding,no-X11-forwarding ${pubKey}`;
   await fs.promises.appendFile(authKeysPath, `\n${authorizedKey}\n`, { mode: 0o600 });
-  await fs.promises.chmod(authKeysPath, 0o600);
-  return { authKeysPath, authorizedKey };
+  try {
+    await fs.promises.chmod(authKeysPath, 0o600);
+  } catch {}
+
+  // Windows Administrators authorized keys handling
+  let adminAuthKeysPath = null;
+  if (process.platform === 'win32') {
+    const programData = process.env.PROGRAMDATA || 'C:\\ProgramData';
+    const adminKeysPath = path.join(programData, 'ssh', 'administrators_authorized_keys');
+    try {
+      if (fs.existsSync(path.dirname(adminKeysPath))) {
+        await fs.promises.appendFile(adminKeysPath, `\n${authorizedKey}\n`, { mode: 0o600 });
+        try {
+          await execa('icacls', [adminKeysPath, '/inheritance:r', '/grant', '*S-1-5-32-544:F', '/grant', '*S-1-5-18:F']);
+        } catch {}
+        adminAuthKeysPath = adminKeysPath;
+      }
+    } catch {}
+  }
+
+  return { authKeysPath, adminAuthKeysPath, authorizedKey };
 }
 
-async function removePublicKey(authKeysPath, authorizedKey) {
+async function removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath = null) {
   if (fs.existsSync(authKeysPath)) {
     const stat = await fs.promises.lstat(authKeysPath);
-    if (stat.isSymbolicLink()) {
-      throw new Error('Refusing to modify a symlinked authorized_keys file');
+    if (!stat.isSymbolicLink()) {
+      let keys = await fs.promises.readFile(authKeysPath, 'utf8');
+      keys = keys.replace(`\n${authorizedKey}\n`, '');
+      await fs.promises.writeFile(authKeysPath, keys);
+      try {
+        await fs.promises.chmod(authKeysPath, 0o600);
+      } catch {}
     }
-    let keys = await fs.promises.readFile(authKeysPath, 'utf8');
-    keys = keys.replace(`\n${authorizedKey}\n`, '');
-    await fs.promises.writeFile(authKeysPath, keys);
-    await fs.promises.chmod(authKeysPath, 0o600);
+  }
+  if (adminAuthKeysPath && fs.existsSync(adminAuthKeysPath)) {
+    try {
+      let keys = await fs.promises.readFile(adminAuthKeysPath, 'utf8');
+      keys = keys.replace(`\n${authorizedKey}\n`, '');
+      await fs.promises.writeFile(adminAuthKeysPath, keys);
+    } catch {}
   }
 }
 
@@ -347,12 +415,19 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
   async function fetchDecryptedApprovals() {
     const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
     const decryptedApprovals = await Promise.all((data.approvals || []).map(async (a) => {
-      const base = { id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt };
+      const base = { id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt, ip: a.ip || 'unknown' };
       if (!a.iv || !a.ciphertext || !a.salt) return base;
       try {
         const decrypted = await decryptAsync(a.iv, a.ciphertext, password, a.salt);
         const details = JSON.parse(decrypted);
-        return { ...base, username: details.username, hostname: details.hostname, os: details.os, intent: details.intent };
+        return {
+          ...base,
+          username: details.username,
+          hostname: details.hostname,
+          os: details.os,
+          intent: details.intent,
+          localIp: details.localIp || 'unknown'
+        };
       } catch {
         return base;
       }
@@ -488,7 +563,31 @@ async function startLocalHostDashboard(uid, password, serviceConfig, sessionStat
     const { requestId, decision } = req.body || {};
     if (!requestId || !decision) return res.status(400).json({ error: 'requestId and decision required' });
     try {
-      await decideApprovalRequest(BROKER_URL, uid, requestId, decision, sessionState.hostToken);
+      let approvedPayload = null;
+      if (decision === 'approved') {
+        const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
+        const request = (data.approvals || []).find(item => item.id === requestId);
+        if (!request) return res.status(404).json({ error: 'Request not found' });
+        
+        let details = {};
+        try {
+          details = JSON.parse(await decryptAsync(request.iv, request.ciphertext, password, request.salt));
+        } catch {}
+        
+        const clientKeySalt = [
+          password,
+          request.ip || 'unknown',
+          details.username || 'unknown',
+          details.hostname || 'unknown',
+          details.os || 'unknown'
+        ].join('|');
+        const clientPwd = crypto.createHash('sha256').update(clientKeySalt).digest('hex');
+        
+        const payload = JSON.stringify({ url: sessionState.tunnelUrl, ...serviceConfig });
+        approvedPayload = await encryptAsync(payload, clientPwd);
+      }
+
+      await decideApprovalRequest(BROKER_URL, uid, requestId, decision, sessionState.hostToken, approvedPayload);
       recordEvent('approval_decision', { uid, requestId, decision, via: 'dashboard' });
       res.json({ ok: true });
     } catch (err) {
@@ -684,7 +783,7 @@ function renderApprovals(approvals) {
     heading.append(title, badge);
     const details = document.createElement('div');
     details.className = 'meta';
-    details.textContent = 'User: ' + String(req.username || 'unknown') + '  |  Host: ' + String(req.hostname || 'unknown') + '  |  OS: ' + String(req.os || 'unknown');
+    details.textContent = 'User: ' + String(req.username || 'unknown') + '  |  Host: ' + String(req.hostname || 'unknown') + '  |  OS: ' + String(req.os || 'unknown') + '  |  IP: ' + String(req.ip || 'unknown') + ' (Local: ' + String(req.localIp || 'unknown') + ')';
     const meta = document.createElement('div');
     meta.className = 'meta';
     meta.textContent = 'Submitted: ' + new Date(req.createdAt).toLocaleTimeString();
@@ -932,7 +1031,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
       const choices = [
         { name: '✅ Review pending client approvals', value: 'approvals' },
         { name: '📡 See detailed client telemetry', value: 'show' },
-        { name: '📺 Mirror Client Terminal (requires tmux)', value: 'mirror' },
+        { name: '📄 View live client activity logs', value: 'logs' },
         { name: '🔄 Re-register with broker', value: 'reregister' }
       ];
 
@@ -986,6 +1085,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               console.log(`    Host:   ${details.hostname || 'unknown'}`);
               console.log(`    OS:     ${details.os || 'unknown'}`);
               console.log(`    Intent: ${details.intent || 'connect'}`);
+              console.log(`    IP:     ${request.ip || 'unknown'} (Local: ${details.localIp || 'unknown'})`);
 
               const { decision } = await inquirer.prompt([{
                 type: 'list',
@@ -998,7 +1098,22 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
                 ],
               }]);
               if (decision !== 'skip') {
-                await decideApprovalRequest(BROKER_URL, uid, request.id, decision, sessionState.hostToken);
+                let approvedPayload = null;
+                if (decision === 'approved') {
+                  const clientKeySalt = [
+                    password,
+                    request.ip || 'unknown',
+                    details.username || 'unknown',
+                    details.hostname || 'unknown',
+                    details.os || 'unknown'
+                  ].join('|');
+                  const clientPwd = crypto.createHash('sha256').update(clientKeySalt).digest('hex');
+                  
+                  const payload = JSON.stringify({ url: sessionState.tunnelUrl, ...serviceConfig });
+                  approvedPayload = await encryptAsync(payload, clientPwd);
+                }
+                
+                await decideApprovalRequest(BROKER_URL, uid, request.id, decision, sessionState.hostToken, approvedPayload);
                 recordEvent('approval_decision', { uid, requestId: request.id, decision, username: details.username });
               }
             }
@@ -1057,48 +1172,8 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           return waitForAction();
         }
 
-        case 'mirror': {
-          console.log('');
-          console.log(chalk.bold.cyan('  📺 Terminal Mirroring'));
-          console.log(chalk.dim('  ──────────────────────────────────────'));
-          console.log(chalk.dim('  Attaching to the tmux session created by an interactive SSH client.'));
-          console.log(chalk.dim('  Press Ctrl+b then d to detach gracefully.'));
-          console.log('');
-
-          try {
-            await execa('tmux', ['-V'], { reject: true });
-            const sessions = await getMirrorableSessions();
-            if (sessions.length === 0) {
-              console.log(chalk.yellow('  ⚠️  No mirrored terminal session is active yet.'));
-              console.log(chalk.dim('     A client must choose "Connect via SSH" first. SCP-only clients do not create a tmux session.'));
-              console.log(chalk.dim('     tmux is needed on the host machine only; the client does not need tmux.'));
-              logSessionEvent('host_mirror_missing_session', {}, 'warn');
-              return waitForAction();
-            }
-
-            let target = sessions[0];
-            if (sessions.length > 1) {
-              const { sessionChoice } = await inquirer.prompt([{
-                type: 'list',
-                name: 'sessionChoice',
-                message: 'Select an active client session to mirror:',
-                choices: sessions.map((s, idx) => {
-                  const created = s.createdAt ? new Date(s.createdAt * 1000).toLocaleTimeString() : 'Unknown';
-                  const label = `${s.name} ${chalk.dim(`(started ${created})`)}`;
-                  return { name: label, value: String(idx) };
-                }),
-              }]);
-              target = sessions[parseInt(sessionChoice, 10)] || sessions[0];
-            }
-
-            await execa('tmux', [...target.socketArgs, 'attach', '-t', target.name, '-r'], { stdio: 'inherit', reject: false });
-            logSessionEvent('host_mirror_attached', { session: target.name, source: target.source });
-          } catch (err) {
-            console.log(chalk.yellow('  ⚠️  Could not attach to tmux.'));
-            console.log(chalk.dim(`     ${err.message}`));
-            console.log(chalk.dim('     Terminal mirroring requires tmux on the host machine and an active interactive SSH client.'));
-            logSessionEvent('host_mirror_error', { error: err.message }, 'warn');
-          }
+        case 'logs': {
+          await viewLiveClientLogs(serviceConfig.sharedDropPath);
           return waitForAction();
         }
 
@@ -1154,15 +1229,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           try {
             await revokeUID(BROKER_URL, uid, sessionState.hostToken);
             tunnelProcess.kill();
-            if (process.platform !== 'win32') {
-              await execa('tmux', [...tmuxSocketArgs(), 'kill-server'], { reject: false });
-              const legacySessions = await listTmuxSessions();
-              for (const session of legacySessions) {
-                if (isSecureLinkSession(session.name)) {
-                  await execa('tmux', ['kill-session', '-t', session.name], { reject: false });
-                }
-              }
-            }
+            // No tmux server to terminate since mirroring was discarded
             spinner.succeed('Session revoked and iPingYou-owned connections terminated');
             logSessionEvent('host_sessions_terminated');
           } catch {
@@ -1310,7 +1377,6 @@ export async function startHostMode() {
 
   if (serviceType === 'ssh' || serviceType === 'share') {
     await ensureSSHRunning();
-    await ensureTmuxInstalled();
 
     try {
       serviceConfig.sharedDropPath = await prepareSharedDropFolder(uid);
@@ -1340,13 +1406,13 @@ export async function startHostMode() {
     console.log(chalk.dim('  🔑 Generating ephemeral SSH key for passwordless entry...'));
     try {
       const ephemeralKey = await generateEphemeralKey();
-      const { authKeysPath, authorizedKey } = await injectPublicKey(ephemeralKey.pubKey);
+      const { authKeysPath, adminAuthKeysPath, authorizedKey } = await injectPublicKey(ephemeralKey.pubKey);
 
       serviceConfig.privateKey = ephemeralKey.privKey;
 
       addCleanupHook(async () => {
         console.log(chalk.dim('     Removing ephemeral public key...'));
-        await removePublicKey(authKeysPath, authorizedKey);
+        await removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath);
         try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
         try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
       });

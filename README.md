@@ -17,7 +17,7 @@ No firewalls to configure. No port forwarding. No plaintext leakage.
 
 * 🔐 **Ephemeral Passwordless Auth**: The Host automatically injects a temporary `Ed25519` key into `authorized_keys`. Clients connect instantly without knowing the machine's actual root/user password. Keys are purged immediately on exit.
 * 💬 **E2E Web Crypto Chat Room**: A real-time, browser-based chat UI using native Web Crypto API (`AES-GCM`). Your chat keys are passed via URL fragments (`#password`) so they never touch a server—not even the Host machine's Node server!
-* 📺 **Terminal Mirroring**: Wrap client SSH sessions in a multiplexed `tmux` terminal. The Host can spectate connected clients in real-time right from the dashboard to audit or assist.
+* 📊 **Live Client Activity Logs**: Stream and inspect connected clients' activity logs in real-time right from the Host control console to audit actions and verify transfers.
 * 🔄 **Reverse Port Forwarding (`ssh -R`)**: Clients can expose their *local* `localhost` development ports back to the Host through the secure tunnel.
 * 📡 **Hardware Telemetry Verification**: Clients silently generate hardware footprint reports (OS, RAM, CPU, IP), encrypt them locally with the session password, and send them to the Host for authorization.
 * 🚨 **Scoped Emergency Stop**: Type `ipingyou panic` and confirm locally to stop only processes and temporary credentials owned by the current iPingYou session.
@@ -118,7 +118,6 @@ These alerts (e.g., "AI-detected potential code anomaly", "Shell access", "Netwo
 | **Node.js ≥18** | ✅ | [nodejs.org](https://nodejs.org) |
 | **`ssh`** | ✅ | Ships native on macOS/Linux. Windows: `winget install Microsoft.OpenSSH.Client` |
 | **`cloudflared`** | ✅ | `brew install cloudflared` or [Download Here](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) |
-| **`tmux`** | 〰️ | *Optional*. Required on Host machine if you want to use **Terminal Mirroring**. |
 
 *(Note: The CLI auto-detects your OS and will attempt to guide you on how to install any missing dependencies!)*
 

@@ -7,7 +7,7 @@ import chalk from 'chalk';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commandExists, detectOS } from '../lib/platform.js';
+import { commandExists, detectOS, isLinuxSSHActive } from '../lib/platform.js';
 import { pingBroker } from '../lib/broker.js';
 import { classifyCommand, redactSensitive } from '../lib/ai/safety.js';
 
@@ -96,13 +96,12 @@ async function checkSshService() {
   }
 
   if (osInfo.isLinux) {
-    const ssh = await execa('systemctl', ['is-active', 'ssh'], { reject: false, timeout: 5000 });
-    const sshd = ssh.exitCode === 0 ? ssh : await execa('systemctl', ['is-active', 'sshd'], { reject: false, timeout: 5000 });
-    if (sshd.exitCode === 0) return { status: 'pass', detail: 'SSH service is active' };
+    const active = await isLinuxSSHActive();
+    if (active) return { status: 'pass', detail: 'SSH service is active' };
     return {
       status: 'warn',
       detail: 'SSH service is not reported active',
-      hint: 'Run `sudo systemctl start ssh` or `sudo systemctl start sshd` before hosting.',
+      hint: 'Run `sudo systemctl start ssh`, `sudo service ssh start` or equivalent before hosting.',
     };
   }
 
