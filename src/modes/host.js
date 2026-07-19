@@ -58,6 +58,188 @@ async function waitForValue(getValue, timeoutMs, label) {
   return getValue();
 }
 
+function formatTelemetryTime(value) {
+  if (!value) return 'unknown';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString();
+}
+
+function getTelemetryClientKey(item) {
+  return [
+    item.username || 'unknown',
+    item.hostname || '',
+    item.ip || 'unknown',
+    item.os || 'unknown',
+  ].join('|');
+}
+
+function summarizeTelemetryClient(group) {
+  const latest = group.events[group.events.length - 1] || {};
+  const actions = [...new Set(group.events.map(event => event.action || 'connected'))];
+  return {
+    username: latest.username || group.username || 'unknown',
+    hostname: latest.hostname || 'unknown',
+    ip: latest.ip || 'unknown',
+    localIp: latest.localIp || 'unknown',
+    os: latest.os || 'unknown',
+    cpu: latest.cpu || 'unknown',
+    ram: latest.ram || 'unknown',
+    latestAction: latest.action || 'connected',
+    latestTime: latest.time || latest.seenAt || null,
+    actionCount: group.events.length,
+    uniqueActions: actions,
+  };
+}
+
+async function decryptTelemetryRecords(clientBlobs, password) {
+  const records = [];
+  const failures = [];
+
+  for (const [index, clientBlob] of clientBlobs.entries()) {
+    try {
+      const decrypted = await decryptAsync(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
+      const parsed = JSON.parse(decrypted);
+      records.push({
+        ...parsed,
+        brokerSeenAt: clientBlob.seenAt || null,
+        telemetryIndex: index + 1,
+      });
+    } catch (err) {
+      failures.push({ index: index + 1, error: err.message });
+      logSessionEvent('host_telemetry_decrypt_failed', { index: index + 1 }, 'warn');
+    }
+  }
+
+  return { records, failures };
+}
+
+function groupTelemetryByClient(records) {
+  const grouped = new Map();
+
+  for (const record of records) {
+    const key = getTelemetryClientKey(record);
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        key,
+        username: record.username || 'unknown',
+        events: [],
+      });
+    }
+    grouped.get(key).events.push(record);
+  }
+
+  return [...grouped.values()]
+    .map(group => ({
+      ...group,
+      events: group.events.sort((a, b) => {
+        const aTime = Date.parse(a.time || a.brokerSeenAt || 0) || 0;
+        const bTime = Date.parse(b.time || b.brokerSeenAt || 0) || 0;
+        return aTime - bTime;
+      }),
+    }))
+    .sort((a, b) => {
+      const aLatest = a.events[a.events.length - 1] || {};
+      const bLatest = b.events[b.events.length - 1] || {};
+      const aTime = Date.parse(aLatest.time || aLatest.brokerSeenAt || 0) || 0;
+      const bTime = Date.parse(bLatest.time || bLatest.brokerSeenAt || 0) || 0;
+      return bTime - aTime;
+    });
+}
+
+function printTelemetryClientDetails(group) {
+  const summary = summarizeTelemetryClient(group);
+
+  console.log('');
+  console.log(chalk.bold.cyan(`  Client: ${summary.username}`));
+  console.log(chalk.dim('  ─────────────────────────────────────'));
+  console.log(`  IP:       ${chalk.white(summary.ip)}`);
+  console.log(`  Local IP: ${chalk.dim(summary.localIp)}`);
+  console.log(`  Hostname: ${chalk.dim(summary.hostname)}`);
+  console.log(`  OS:       ${chalk.dim(summary.os)}`);
+  console.log(`  CPU:      ${chalk.dim(summary.cpu)}`);
+  console.log(`  RAM:      ${chalk.dim(summary.ram)}`);
+  console.log(`  Actions:  ${chalk.yellow(summary.uniqueActions.join(', '))}`);
+  console.log(`  Latest:   ${chalk.yellow(summary.latestAction)} ${chalk.dim(`at ${formatTelemetryTime(summary.latestTime)}`)}`);
+  console.log('');
+  console.log(chalk.bold('  Action timeline'));
+
+  for (const [index, event] of group.events.entries()) {
+    console.log(`    ${String(index + 1).padStart(2, ' ')}. ${chalk.yellow(event.action || 'connected')} ${chalk.dim(formatTelemetryTime(event.time || event.brokerSeenAt))}`);
+    console.log(`        User: ${event.username || 'unknown'} | Hostname: ${event.hostname || 'unknown'}`);
+    console.log(`        IP:   ${event.ip || 'unknown'} | Local: ${event.localIp || 'unknown'}`);
+    console.log(`        OS:   ${event.os || 'unknown'}`);
+    if (event.cpu || event.ram) {
+      console.log(`        HW:   ${event.cpu || 'unknown'} | ${event.ram || 'unknown'}`);
+    }
+  }
+}
+
+async function showDetailedClientTelemetry(uid, password, hostToken) {
+  const spinner = createSpinner('Fetching secure client telemetry...', networkSpinner).start();
+  try {
+    const res = await fetch(`${BROKER_URL}/clients/${uid}`, {
+      headers: hostToken ? { 'x-host-token': hostToken } : {}
+    });
+    if (!res.ok) throw new Error('Failed to fetch from broker');
+    const data = await res.json();
+
+    if (!data.clients || data.clients.length === 0) {
+      spinner.warn('No clients have successfully connected and sent telemetry yet.');
+      return;
+    }
+
+    const { records, failures } = await decryptTelemetryRecords(data.clients, password);
+    if (records.length === 0) {
+      spinner.warn('Telemetry exists, but none could be decrypted with this session password.');
+      return;
+    }
+
+    const clientGroups = groupTelemetryByClient(records);
+    spinner.succeed(`Found ${clientGroups.length} client(s), ${records.length} action event(s).`);
+
+    if (failures.length > 0) {
+      console.log(chalk.yellow(`  ⚠️  ${failures.length} telemetry payload(s) could not be decrypted.`));
+    }
+
+    let keepInspecting = true;
+    while (keepInspecting) {
+      const { selectedClientKey } = await inquirer.prompt([{
+        type: 'list',
+        name: 'selectedClientKey',
+        message: 'Select a client to view associated actions:',
+        pageSize: 12,
+        choices: [
+          ...clientGroups.map(group => {
+            const summary = summarizeTelemetryClient(group);
+            return {
+              name: `${summary.username}@${summary.hostname} | ${summary.ip} | ${summary.latestAction} | ${summary.actionCount} event(s) | ${formatTelemetryTime(summary.latestTime)}`,
+              value: group.key,
+            };
+          }),
+          new inquirer.Separator(),
+          { name: '↩ Back to host controls', value: '__back' },
+        ],
+      }]);
+
+      if (selectedClientKey === '__back') break;
+      const selected = clientGroups.find(group => group.key === selectedClientKey);
+      if (selected) printTelemetryClientDetails(selected);
+
+      const { inspectAnother } = await inquirer.prompt([{
+        type: 'confirm',
+        name: 'inspectAnother',
+        message: 'View another client?',
+        default: false,
+      }]);
+      keepInspecting = inspectAnother;
+    }
+  } catch (err) {
+    spinner.fail(`Could not load telemetry: ${err.message}`);
+    logSessionEvent('host_telemetry_fetch_failed', { error: err.message }, 'warn');
+  }
+}
+
 /**
  * Ensure the local SSH server is running.
  */
@@ -309,6 +491,10 @@ async function generateEphemeralKey() {
   const pubKey = (await fs.promises.readFile(`${keyPath}.pub`, 'utf8')).trim();
 
   return { keyPath, privKey, pubKey };
+}
+
+function getCurrentSshUsername() {
+  return os.userInfo().username || process.env.USER || process.env.USERNAME || '';
 }
 
 async function injectPublicKey(pubKey) {
@@ -1274,42 +1460,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
         }
 
         case 'show': {
-          const spinner = createSpinner('Fetching secure client telemetry...', networkSpinner).start();
-          try {
-            const res = await fetch(`${BROKER_URL}/clients/${uid}`, {
-              headers: sessionState.hostToken ? { 'x-host-token': sessionState.hostToken } : {}
-            });
-            if (!res.ok) throw new Error('Failed to fetch from broker');
-            const data = await res.json();
-
-            if (!data.clients || data.clients.length === 0) {
-              spinner.warn('No clients have successfully connected and sent telemetry yet.');
-            } else {
-              spinner.succeed(`Found ${data.clients.length} recent connection(s):`);
-
-              for (const [i, clientBlob] of data.clients.entries()) {
-                try {
-                  // Decrypt using the unique salt the client generated for this payload
-                  const decrypted = await decryptAsync(clientBlob.iv, clientBlob.ciphertext, password, clientBlob.salt);
-                  const t = JSON.parse(decrypted);
-
-                  console.log(chalk.bold.blue(`\n  Client #${i + 1} (${t.username})`));
-                  console.log(`    IP:       ${chalk.white(t.ip)}`);
-                  console.log(`    OS:       ${chalk.dim(t.os)}`);
-                  console.log(`    CPU:      ${chalk.dim(t.cpu)}`);
-                  console.log(`    RAM:      ${chalk.dim(t.ram)}`);
-                  console.log(`    Action:   ${chalk.yellow(t.action || 'connected')}`);
-                  console.log(`    Time:     ${chalk.dim(t.time)}`);
-                } catch (e) {
-                  console.log(chalk.yellow(`\n  Client #${i + 1}: Payload decryption failed (wrong password or corrupted).`));
-                  logSessionEvent('host_telemetry_decrypt_failed', { index: i + 1 }, 'warn');
-                }
-              }
-            }
-          } catch (e) {
-            spinner.fail('Could not reach broker.');
-            logSessionEvent('host_telemetry_fetch_failed', { error: e.message }, 'warn');
-          }
+          await showDetailedClientTelemetry(uid, password, sessionState.hostToken);
           console.log('');
           return waitForAction();
         }
@@ -1506,8 +1657,13 @@ export async function startHostMode() {
     try {
       const ephemeralKey = await generateEphemeralKey();
       const { authKeysPath, adminAuthKeysPath, authorizedKey } = await injectPublicKey(ephemeralKey.pubKey);
+      const sshUsername = getCurrentSshUsername();
+      if (!sshUsername) {
+        throw new Error('Could not resolve the current SSH username for passwordless entry');
+      }
 
       serviceConfig.privateKey = ephemeralKey.privKey;
+      serviceConfig.sshUsername = sshUsername;
 
       addCleanupHook(async () => {
         console.log(chalk.dim('     Removing ephemeral public key...'));
@@ -1515,7 +1671,7 @@ export async function startHostMode() {
         try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
         try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
       });
-      console.log(chalk.green('  ✓ Ephemeral key injected. Client will connect without system password!'));
+      console.log(chalk.green(`  ✓ Ephemeral key injected for ${sshUsername}. Client will connect without system password!`));
       logSessionEvent('host_ephemeral_key_ready');
     } catch (err) {
       console.log(chalk.yellow(`  ⚠️  Could not prepare ephemeral SSH key: ${err.message}`));

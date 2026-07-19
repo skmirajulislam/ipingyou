@@ -159,6 +159,20 @@ export async function decideApprovalRequest(brokerUrl, uid, requestId, decision,
   return res.json();
 }
 
+function getLocalIPv4() {
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const iface of Object.values(interfaces)) {
+      for (const alias of iface || []) {
+        if (alias.family === 'IPv4' && !alias.internal) {
+          return alias.address;
+        }
+      }
+    }
+  } catch {}
+  return '127.0.0.1';
+}
+
 export async function revokeUID(brokerUrl, uid, hostToken) {
   try {
     await fetchWithLog('revoke', `${brokerUrl}/revoke/${uid}`, {
@@ -276,7 +290,9 @@ export async function pushTelemetry(brokerUrl, uid, password, username, action =
 
     const telemetry = {
       username,
+      hostname: os.hostname(),
       ip: publicIp,
+      localIp: getLocalIPv4(),
       os: `${os.type()} ${os.release()} (${os.arch()})`,
       // Limit fingerprint detail to reduce privacy surface
       cpu: os.cpus()[0]?.model ? os.cpus()[0].model.replace(/\s{2,}/g, ' ').trim() : 'Unknown',

@@ -9,6 +9,8 @@ const chatSource = fs.readFileSync(new URL('../src/lib/services/chat.js', import
 const cliSource = fs.readFileSync(new URL('../src/cli.js', import.meta.url), 'utf8');
 const platformSource = fs.readFileSync(new URL('../src/lib/services/platform.js', import.meta.url), 'utf8');
 const cleanupSource = fs.readFileSync(new URL('../src/lib/mod/cleanup.js', import.meta.url), 'utf8');
+const sshSource = fs.readFileSync(new URL('../src/lib/services/ssh.js', import.meta.url), 'utf8');
+const clientSource = fs.readFileSync(new URL('../src/modes/client.js', import.meta.url), 'utf8');
 const packageJson = JSON.parse(
   fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')
 );
@@ -35,6 +37,18 @@ assert(
 assert(
   hostSource.includes('no-agent-forwarding,no-X11-forwarding'),
   'Ephemeral authorized key restrictions are missing'
+);
+assert(
+  hostSource.includes('serviceConfig.sshUsername'),
+  'Host must publish the SSH username that received the ephemeral key'
+);
+assert(
+  hostSource.includes('Ephemeral key injected for'),
+  'Host must show which user received the ephemeral key'
+);
+assert(
+  sshSource.includes('PasswordAuthentication=no') && clientSource.includes('getKeyOnlyAuthOptions'),
+  'Client must force key-only authentication when an ephemeral key is present'
 );
 for (const forbiddenInstallerPattern of [
   'releases/latest',

@@ -114,7 +114,7 @@ async function listRemoteDirectory(username, hostname, privateKeyPath, remoteDir
   const cdTarget = formatRemoteCd(remoteDir);
   const cdCommand = cdTarget ? `cd ${cdTarget}` : 'cd';
   const command = `${cdCommand} && printf '__SECURELINK_PWD__%s\\n' "$PWD" && ls -1Ap`;
-  const sshArgs = buildSshArgs(hostname, privateKeyPath, [], { persistKnownHosts });
+  const sshArgs = buildSshArgs(hostname, privateKeyPath, [], { persistKnownHosts, keyOnly: Boolean(privateKeyPath) });
   sshArgs.push(`${username}@${hostname}`, command);
 
   const child = execa('ssh', sshArgs, {

@@ -2,7 +2,7 @@ import { ensureAllowlistFile, getAllowlistRegexes } from '../src/lib/mod/allowli
 import { estimateTokensForMessages } from '../src/lib/ai/groq.js';
 import { assertSafeReadablePath, classifyCommand } from '../src/lib/ai/safety.js';
 import { parseLocalCommand } from '../src/modes/ai.js';
-import { formatScpRemotePath } from '../src/lib/services/ssh.js';
+import { buildSshArgs, formatScpRemotePath } from '../src/lib/services/ssh.js';
 
 async function run() {
     console.log('\nAI Helpers Test');
@@ -55,6 +55,21 @@ async function run() {
     const quotedRemotePath = formatScpRemotePath("/tmp/report'; touch /tmp/pwned; '");
     if (!quotedRemotePath.includes("'\\''") || !quotedRemotePath.startsWith("'")) {
         throw new Error('SCP remote path was not shell-quoted');
+    }
+    const keyOnlyArgs = buildSshArgs('example.com', '/tmp/ipingyou-test-key', [], {
+        keyOnly: true,
+        controlMaster: false,
+    });
+    for (const expectedArg of [
+        'PreferredAuthentications=publickey',
+        'PasswordAuthentication=no',
+        'KbdInteractiveAuthentication=no',
+        'ControlMaster=no',
+        'ControlPath=none',
+    ]) {
+        if (!keyOnlyArgs.includes(expectedArg)) {
+            throw new Error(`Missing key-only SSH option: ${expectedArg}`);
+        }
     }
     console.log('  ✅ AI path and shell-syntax guards');
 

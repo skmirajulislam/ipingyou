@@ -24,7 +24,7 @@ import { getConfig, saveAlias } from '../lib/mod/config.js';
 import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval } from '../lib/client/broker.js';
 import { calculateChecksum } from '../lib/mod/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/client/path-browser.js';
-import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/services/ssh.js';
+import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKeyOnlyAuthOptions, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/services/ssh.js';
 import { openUrl } from '../lib/mod/open-url.js';
 import { secureSensitiveUrl } from '../lib/mod/secure-print.js';
 import { cleanupSessionLog, initSessionLog, logSessionEvent, recordEvent } from '../lib/mod/session-log.js';
@@ -55,7 +55,7 @@ function startLiveLogSync(username, hostname, privateKeyPath, remoteDropPath, lo
         ...getSshControlOptions(hostname)
       ];
       if (privateKeyPath) {
-        scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
+        scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none', ...getKeyOnlyAuthOptions());
       }
 
       const clientName = `${os.userInfo().username}-${os.hostname()}`;
@@ -98,6 +98,24 @@ async function promptUsername() {
   return username.trim();
 }
 
+async function resolveSshUsername(payload, targetUsername) {
+  const keyUsername = String(payload?.sshUsername || '').trim();
+
+  if (payload?.privateKey && keyUsername) {
+    if (targetUsername && targetUsername !== keyUsername) {
+      console.log(chalk.yellow(`  ⚠️  Saved alias username "${targetUsername}" does not match the host-provided key user "${keyUsername}".`));
+      console.log(chalk.dim(`     Using "${keyUsername}" so passwordless SSH can work.`));
+      logSessionEvent('client_alias_username_overridden_for_key', { aliasUsername: targetUsername, keyUsername }, 'warn');
+    } else {
+      console.log(chalk.dim(`  🔑 Using host-provided SSH username for passwordless entry: ${keyUsername}`));
+    }
+    return keyUsername;
+  }
+
+  if (targetUsername) return targetUsername;
+  return promptUsername();
+}
+
 function normalizePrivateKey(privateKey) {
   const normalized = String(privateKey || '').replace(/\\n/g, '\n').replace(/\r\n/g, '\n');
   return normalized.endsWith('\n') ? normalized : `${normalized}\n`;
@@ -129,6 +147,27 @@ async function writeEphemeralPrivateKey(privateKey) {
   return keyPath;
 }
 
+async function verifyEphemeralKeyAccess(username, hostname, privateKeyPath, persistKnownHosts = true) {
+  if (!privateKeyPath) return;
+
+  const sshArgs = buildSshArgs(hostname, privateKeyPath, [
+    '-o', 'BatchMode=yes',
+    '-o', 'ConnectTimeout=15',
+    `${username}@${hostname}`,
+    'true',
+  ], { persistKnownHosts, keyOnly: true, controlMaster: false });
+
+  const result = await execa('ssh', sshArgs, {
+    reject: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  if (result.exitCode !== 0) {
+    const reason = (result.stderr || result.stdout || 'SSH server rejected the ephemeral key').trim();
+    throw new Error(reason.split('\n').slice(-2).join(' ').slice(0, 500));
+  }
+}
+
 /**
  * Start SSH connection through the Cloudflare tunnel.
  */
@@ -140,12 +179,18 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
   await showConnectionTrace('Local', 'Remote SSH');
 
   try {
-    const spinner = createSpinner('Handshaking...', sshSpinner).start();
-    await new Promise(r => setTimeout(r, 800));
+    const spinner = createSpinner(privateKeyPath ? 'Verifying passwordless key...' : 'Handshaking...', sshSpinner).start();
+    if (privateKeyPath) {
+      await verifyEphemeralKeyAccess(username, hostname, privateKeyPath, persistKnownHosts);
+    } else {
+      await new Promise(r => setTimeout(r, 800));
+    }
     spinner.succeed('Connection established! Handing over to terminal...');
     console.log('');
 
+    const authOptions = privateKeyPath ? getKeyOnlyAuthOptions() : [];
     const sshArgs = buildSshArgs(hostname, privateKeyPath, [
+      ...authOptions,
       '-o', 'ServerAliveInterval=30',
       '-o', 'ServerAliveCountMax=3',
       '-t'
@@ -176,7 +221,11 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
       recordEvent('ssh_session_ended', { hostname, exitCode: result.exitCode });
     }
   } catch (err) {
-    console.error(chalk.red(`  ❌ SSH error: ${err.message}`));
+      console.error(chalk.red(`  ❌ SSH error: ${err.message}`));
+      if (privateKeyPath) {
+        console.log(chalk.yellow('  Passwordless key authentication failed before opening the interactive shell.'));
+        console.log(chalk.dim('  Ask the host to restart host mode and connect with the host-provided SSH username.'));
+      }
   }
 }
 
@@ -253,7 +302,7 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
   ];
 
   if (privateKeyPath) {
-    scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
+    scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none', ...getKeyOnlyAuthOptions());
   }
 
   const remoteSpec = `${username}@${hostname}:${formatScpRemotePath(remotePath)}`;
@@ -303,7 +352,7 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
         console.log(chalk.dim('  🔍 Verifying remote SHA-256 checksum...'));
         try {
           const remoteChecksumPath = joinRemotePath(remotePath, path.basename(localPath));
-          const sshArgs = buildSshArgs(hostname, privateKeyPath, [], { persistKnownHosts });
+          const sshArgs = buildSshArgs(hostname, privateKeyPath, [], { persistKnownHosts, keyOnly: Boolean(privateKeyPath) });
           sshArgs.push(`${username}@${hostname}`, `shasum -a 256 ${quoteRemoteShell(remoteChecksumPath)} 2>/dev/null || sha256sum ${quoteRemoteShell(remoteChecksumPath)} 2>/dev/null || shasum -a 256 ${quoteRemoteShell(remotePath)} 2>/dev/null || sha256sum ${quoteRemoteShell(remotePath)}`);
 
           const { stdout } = await execa('ssh', sshArgs, { reject: false });
@@ -346,7 +395,7 @@ async function downloadSpecificRemotePath(username, hostname, privateKeyPath, re
     '-o', 'IdentitiesOnly=yes',
     ...getSshControlOptions(hostname),
   ];
-  if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
+  if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none', ...getKeyOnlyAuthOptions());
   scpArgs.push(`${username}@${hostname}:${formatScpRemotePath(remotePath)}`, localPath);
   const child = execa('scp', scpArgs, { stdio: 'inherit', reject: false });
   trackPID(child.pid);
@@ -605,7 +654,7 @@ export async function startClientMode(options = {}) {
   }
 
   const tunnelUrl = payload.url;
-  const username = targetUsername || await promptUsername();
+  const username = await resolveSshUsername(payload, targetUsername);
   const hostname = extractHostname(tunnelUrl);
 
   // Setup Ephemeral Key if provided
@@ -760,7 +809,7 @@ export async function performSCPNonInteractive(params = {}) {
 
   // Build scp args similar to performSCP
   const scpArgs = ['-r', '-O', ...buildProxyCommandOption(hostname), ...getKnownHostsOptions(persistKnownHosts), '-o', 'IdentitiesOnly=yes', ...getSshControlOptions(hostname)];
-  if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
+  if (privateKeyPath) scpArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none', ...getKeyOnlyAuthOptions());
 
   const remoteSpec = `${username}@${hostname}:${formatScpRemotePath(remotePath)}`;
   if (direction === 'upload') {
@@ -882,7 +931,7 @@ async function performReverseForward(username, hostname, privateKeyPath, persist
     '-N',
     '-R', portMap,
     '-o', 'ExitOnForwardFailure=yes',
-  ], { persistKnownHosts });
+  ], { persistKnownHosts, keyOnly: Boolean(privateKeyPath) });
   sshArgs.push(`${username}@${hostname}`);
 
   console.log('');

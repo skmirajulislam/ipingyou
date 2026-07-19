@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { getAlias } from '../lib/mod/config.js';
 import { resolveUID } from '../lib/client/broker.js';
-import { buildSshArgs, extractHostname, quoteRemoteShell } from '../lib/services/ssh.js';
+import { buildSshArgs, extractHostname, getKeyOnlyAuthOptions, quoteRemoteShell } from '../lib/services/ssh.js';
 import { addCleanupHook, cleanupAll, trackPID, untrackPID } from '../lib/mod/cleanup.js';
 import { startHostMode } from './host.js';
 import { startClientMode } from './client.js';
@@ -291,7 +291,7 @@ export function parseLocalCommand(command) {
 }
 
 async function runRemoteCommand(context, command) {
-  const sshArgs = buildSshArgs(context.hostname, context.privateKeyPath);
+  const sshArgs = buildSshArgs(context.hostname, context.privateKeyPath, [], { keyOnly: Boolean(context.privateKeyPath) });
   sshArgs.push(`${context.username}@${context.hostname}`, command);
   const child = execa('ssh', sshArgs, {
     reject: false,
@@ -385,6 +385,13 @@ async function setupRemoteContext() {
   let privateKeyPath = null;
   if (payload.privateKey) {
     privateKeyPath = await writeEphemeralPrivateKey(payload.privateKey);
+    if (payload.sshUsername) {
+      const keyUsername = String(payload.sshUsername).trim();
+      if (keyUsername && username !== keyUsername) {
+        console.log(chalk.dim(`  🔑 Using host-provided SSH username for passwordless entry: ${keyUsername}`));
+        username = keyUsername;
+      }
+    }
   }
 
   return {
@@ -665,7 +672,7 @@ async function tryAITransfer(task, context) {
       ...getSshControlOptions(context.hostname),
     ];
     if (context.privateKeyPath) {
-      scpArgs.push('-i', context.privateKeyPath, '-o', 'IdentityAgent=none');
+      scpArgs.push('-i', context.privateKeyPath, '-o', 'IdentityAgent=none', ...getKeyOnlyAuthOptions());
     }
 
     const remoteSpec = `${context.username}@${context.hostname}:${formatScpRemotePath(remotePath)}`;

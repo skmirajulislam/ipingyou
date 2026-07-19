@@ -68,6 +68,14 @@ export function getSshControlOptions(hostname) {
   ];
 }
 
+export function getKeyOnlyAuthOptions() {
+  return [
+    '-o', 'PreferredAuthentications=publickey',
+    '-o', 'PasswordAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=no',
+  ];
+}
+
 export function buildProxyCommandOption(hostname) {
   const safeHostname = assertSafeHostname(hostname, 'tunnel hostname');
   const cfExecutable = getCloudflaredPathSync();
@@ -87,12 +95,13 @@ export function getKnownHostsOptions(persistKnownHosts = true) {
 }
 
 export function buildSshArgs(hostname, privateKeyPath, extraOptions = [], options = {}) {
-  const { persistKnownHosts = true } = options;
+  const { persistKnownHosts = true, controlMaster = true, keyOnly = false } = options;
   const sshArgs = [
     ...buildProxyCommandOption(hostname),
     ...getKnownHostsOptions(persistKnownHosts),
     '-o', 'IdentitiesOnly=yes',
-    ...getSshControlOptions(hostname),
+    ...(controlMaster ? getSshControlOptions(hostname) : ['-o', 'ControlMaster=no', '-o', 'ControlPath=none']),
+    ...(privateKeyPath && keyOnly ? getKeyOnlyAuthOptions() : []),
     ...extraOptions,
   ];
 
