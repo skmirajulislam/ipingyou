@@ -178,8 +178,9 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
 
   await showConnectionTrace('Local', 'Remote SSH');
 
+  let spinner = null;
   try {
-    const spinner = createSpinner(privateKeyPath ? 'Verifying passwordless key...' : 'Handshaking...', sshSpinner).start();
+    spinner = createSpinner(privateKeyPath ? 'Verifying passwordless key...' : 'Handshaking...', sshSpinner).start();
     if (privateKeyPath) {
       await verifyEphemeralKeyAccess(username, hostname, privateKeyPath, persistKnownHosts);
     } else {
@@ -221,11 +222,12 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
       recordEvent('ssh_session_ended', { hostname, exitCode: result.exitCode });
     }
   } catch (err) {
-      console.error(chalk.red(`  ❌ SSH error: ${err.message}`));
-      if (privateKeyPath) {
-        console.log(chalk.yellow('  Passwordless key authentication failed before opening the interactive shell.'));
-        console.log(chalk.dim('  Ask the host to restart host mode and connect with the host-provided SSH username.'));
-      }
+    if (spinner) spinner.fail(privateKeyPath ? 'Passwordless key verification failed' : 'SSH handshake failed');
+    console.error(chalk.red(`  ❌ SSH error: ${err.message}`));
+    if (privateKeyPath) {
+      console.log(chalk.yellow('  Passwordless key authentication failed before opening the interactive shell.'));
+      console.log(chalk.dim('  Ask the host to restart host mode. The host will now validate local sshd key acceptance before sharing keys.'));
+    }
   }
 }
 

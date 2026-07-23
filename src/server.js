@@ -496,6 +496,10 @@ app.post('/approval-requests/:uid/:requestId/:decision', strictLimiter, (req, re
   request.decidedAt = Date.now();
   
   if (req.params.decision === 'approved' && req.body && req.body.ciphertext) {
+    if (!isEncryptedPayload(req.body)) {
+      recordViolation(req);
+      return res.status(400).json({ error: 'Invalid encrypted approved payload' });
+    }
     request.approvedPayload = {
       iv: req.body.iv,
       ciphertext: req.body.ciphertext,

@@ -497,6 +497,41 @@ function getCurrentSshUsername() {
   return os.userInfo().username || process.env.USER || process.env.USERNAME || '';
 }
 
+async function verifyHostAcceptsEphemeralKey(username, keyPath, port = 22) {
+  const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
+  const target = process.platform === 'win32' ? '127.0.0.1' : 'localhost';
+  const result = await execa('ssh', [
+    '-i', keyPath,
+    '-p', String(port),
+    '-o', 'BatchMode=yes',
+    '-o', 'IdentitiesOnly=yes',
+    '-o', 'IdentityAgent=none',
+    '-o', 'PreferredAuthentications=publickey',
+    '-o', 'PasswordAuthentication=no',
+    '-o', 'KbdInteractiveAuthentication=no',
+    '-o', 'StrictHostKeyChecking=no',
+    '-o', `UserKnownHostsFile=${nullDevice}`,
+    '-o', 'ConnectTimeout=8',
+    `${username}@${target}`,
+    'true',
+  ], {
+    reject: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 12000,
+  });
+
+  if (result.exitCode !== 0) {
+    const reason = (result.stderr || result.stdout || `ssh exited with ${result.exitCode}`).trim();
+    throw new Error(reason.split('\n').slice(-3).join(' ').slice(0, 700));
+  }
+}
+
+function showPasswordlessHostHint() {
+  console.log(chalk.dim('     Passwordless SSH was not advertised because local sshd rejected the injected key.'));
+  console.log(chalk.dim('     Common host-side causes: Remote Login disabled, PubkeyAuthentication disabled,'));
+  console.log(chalk.dim('     StrictModes rejecting ~/.ssh permissions, or this macOS user is not allowed for Remote Login.'));
+}
+
 async function injectPublicKey(pubKey) {
   const homedir = os.homedir();
   if (!homedir) {
@@ -1654,13 +1689,17 @@ export async function startHostMode() {
     logSessionEvent('host_approval_required', { approvalRequired });
 
     console.log(chalk.dim('  🔑 Generating ephemeral SSH key for passwordless entry...'));
+    let ephemeralKey = null;
+    let injectedKey = null;
     try {
-      const ephemeralKey = await generateEphemeralKey();
-      const { authKeysPath, adminAuthKeysPath, authorizedKey } = await injectPublicKey(ephemeralKey.pubKey);
+      ephemeralKey = await generateEphemeralKey();
+      injectedKey = await injectPublicKey(ephemeralKey.pubKey);
+      const { authKeysPath, adminAuthKeysPath, authorizedKey } = injectedKey;
       const sshUsername = getCurrentSshUsername();
       if (!sshUsername) {
         throw new Error('Could not resolve the current SSH username for passwordless entry');
       }
+      await verifyHostAcceptsEphemeralKey(sshUsername, ephemeralKey.keyPath, targetPort);
 
       serviceConfig.privateKey = ephemeralKey.privKey;
       serviceConfig.sshUsername = sshUsername;
@@ -1674,7 +1713,15 @@ export async function startHostMode() {
       console.log(chalk.green(`  ✓ Ephemeral key injected for ${sshUsername}. Client will connect without system password!`));
       logSessionEvent('host_ephemeral_key_ready');
     } catch (err) {
+      if (injectedKey) {
+        await removePublicKey(injectedKey.authKeysPath, injectedKey.authorizedKey, injectedKey.adminAuthKeysPath).catch(() => {});
+      }
+      if (ephemeralKey) {
+        try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
+        try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
+      }
       console.log(chalk.yellow(`  ⚠️  Could not prepare ephemeral SSH key: ${err.message}`));
+      showPasswordlessHostHint();
       console.log(chalk.dim('     Client will need to use standard OS password.'));
       logSessionEvent('host_ephemeral_key_failed', { error: err.message }, 'warn');
     }
