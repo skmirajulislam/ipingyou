@@ -93,34 +93,33 @@ class QRCodeGenerator {
    */
   render() {
     let out = '\n';
-    const quietBorder = '  ';
 
-    // Top quiet zone margin
-    out += chalk.bgWhite(' '.repeat((this.size + 4) * 2)) + '\n';
+    // Quiet zone margin (single character width per column)
+    const marginWidth = this.size + 4;
+    out += chalk.bgWhite(' '.repeat(marginWidth)) + '\n';
 
     for (let r = 0; r < this.size; r += 2) {
-      let line = chalk.bgWhite('    ');
+      let line = chalk.bgWhite('  ');
       for (let c = 0; c < this.size; c++) {
         const topDark = (this.modules[r][c] === 1);
         const bottomDark = (r + 1 < this.size) ? (this.modules[r + 1][c] === 1) : false;
 
-        // UTF-8 Half-Block Characters for perfect 1:1 Aspect Ratio
+        // SINGLE character per module column to achieve 1:1 perfect square aspect ratio
         if (topDark && bottomDark) {
-          line += chalk.bgWhite.black('██');
+          line += chalk.bgWhite.black('█');
         } else if (topDark && !bottomDark) {
-          line += chalk.bgWhite.black('▀▀');
+          line += chalk.bgWhite.black('▀');
         } else if (!topDark && bottomDark) {
-          line += chalk.bgWhite.black('▄▄');
+          line += chalk.bgWhite.black('▄');
         } else {
-          line += chalk.bgWhite.white('  ');
+          line += chalk.bgWhite.white(' ');
         }
       }
-      line += chalk.bgWhite('    ');
+      line += chalk.bgWhite('  ');
       out += line + '\n';
     }
 
-    // Bottom quiet zone margin
-    out += chalk.bgWhite(' '.repeat((this.size + 4) * 2)) + '\n';
+    out += chalk.bgWhite(' '.repeat(marginWidth)) + '\n';
     return out;
   }
 }

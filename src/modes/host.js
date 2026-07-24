@@ -2112,7 +2112,7 @@ export async function startHostMode(options = {}) {
     console.log(chalk.dim(`  ℹ️  Ensure your ${protocol.toUpperCase()} service is running on port ${targetPort}.`));
   }
 
-  const sessionState = { tunnelUrl: null, hostToken: null };
+  const sessionState = { tunnelUrl: null, hostToken: null, startTime: Date.now() };
   const tunnelProcess = await spawnTunnelSupervised(targetUrl, async (newUrl) => {
     sessionState.tunnelUrl = newUrl;
     // Register or re-register with broker when tunnel is spawned/respawned
