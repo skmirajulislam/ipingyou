@@ -22,7 +22,7 @@ import { cleanupAll, trackPID, untrackPID, addCleanupHook } from '../lib/mod/cle
 import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, simulateTransferProgress } from '../lib/mod/animations.js';
 import { getConfig, saveAlias } from '../lib/mod/config.js';
 import { validateUID } from '../lib/mod/uid.js';
-import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval } from '../lib/client/broker.js';
+import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval, checkUidStatus } from '../lib/client/broker.js';
 import { calculateChecksum } from '../lib/mod/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/client/path-browser.js';
 import { buildProxyCommandOption, buildSshArgs, extractHostname, formatScpRemotePath, getKeyOnlyAuthOptions, getKnownHostsOptions, getSshControlOptions, quoteRemoteShell } from '../lib/services/ssh.js';
@@ -683,6 +683,27 @@ export async function startClientMode(options = {}) {
   // Push telemetry immediately so host can see the client in "See detailed client telemetry"
   // even before the user picks an action (SSH/SCP/etc.)
   await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, 'connected');
+
+  // Register cleanup hook to send 'disconnected' telemetry when the client exits
+  addCleanupHook(async () => {
+    try {
+      await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, 'disconnected');
+    } catch {}
+  });
+
+  // Background polling to detect if the host has terminated the session
+  const hostCheckInterval = setInterval(async () => {
+    const isAlive = await checkUidStatus(BROKER_URL, targetUid);
+    if (!isAlive) {
+      console.log('');
+      console.log(chalk.bold.bgRed.white('\n ⚠️  HOST DISCONNECTED '));
+      console.log(chalk.red(' The host has terminated the session. Your connection is no longer active.'));
+      console.log('');
+      process.exit(1);
+    }
+  }, 5000);
+  hostCheckInterval.unref?.();
+  addCleanupHook(() => clearInterval(hostCheckInterval));
 
   // Start background E2E client log sync if sharedDropPath is configured
   if (payload.sharedDropPath && sessionLogPath) {

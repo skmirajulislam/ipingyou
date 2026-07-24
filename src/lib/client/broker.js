@@ -45,6 +45,16 @@ export async function pingBroker(url) {
   }
 }
 
+export async function checkUidStatus(brokerUrl, uid) {
+  try {
+    const res = await fetchWithLog('status_check', `${brokerUrl}/status/${uid}`);
+    if (res.status === 404 || res.status === 410) return false;
+    return true; // Default to true on network errors so we don't accidentally drop the session
+  } catch {
+    return true;
+  }
+}
+
 export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, serviceConfig) {
   const spinner = createSpinner('Encrypting session data...', cryptoSpinner).start();
 

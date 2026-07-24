@@ -241,6 +241,23 @@ app.get('/health', generalLimiter, (_req, res) => {
 });
 
 /**
+ * GET /status/:uid
+ * Lightweight check to see if a UID is still active.
+ * Used by clients to detect if the host has terminated.
+ */
+app.get('/status/:uid', generalLimiter, (req, res) => {
+  const { uid } = req.params;
+  if (!isSafeParam(uid)) {
+    return res.status(400).json({ error: 'Invalid UID format' });
+  }
+  const entry = store.get(uid);
+  if (!entry || Date.now() - entry.createdAt > TTL_MS) {
+    return res.status(404).json({ active: false });
+  }
+  res.json({ active: true });
+});
+
+/**
  * POST /register
  * Body: { uid: string, iv: string, ciphertext: string, salt: string }
  *
