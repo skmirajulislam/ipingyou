@@ -48,8 +48,18 @@ export async function pingBroker(url) {
 export async function checkUidStatus(brokerUrl, uid) {
   try {
     const res = await fetchWithLog('status_check', `${brokerUrl}/status/${uid}`);
-    if (res.status === 404 || res.status === 410) return false;
-    return true; // Default to true on network errors so we don't accidentally drop the session
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (data.active === false) return false;
+      return true;
+    }
+    if (res.status === 404 || res.status === 410) {
+      const data = await res.json().catch(() => ({}));
+      if (data.active === false) return false;
+      // If endpoint doesn't exist on older broker (returns 404 HTML), assume active to prevent false disconnects
+      return true;
+    }
+    return true;
   } catch {
     return true;
   }
@@ -174,16 +184,23 @@ export async function kickClient(brokerUrl, uid, hostToken, clientIp = null) {
     'Content-Type': 'application/json',
     ...(hostToken ? { 'x-host-token': hostToken } : {})
   };
-  const res = await fetchWithLog('kick_client', `${brokerUrl}/kick/${uid}`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ clientIp })
-  });
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data.error || `HTTP ${res.status}`);
+  try {
+    const res = await fetchWithLog('kick_client', `${brokerUrl}/kick/${uid}`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ clientIp })
+    });
+    if (!res.ok) {
+      if (res.status === 404) {
+        return await revokeUID(brokerUrl, uid, hostToken);
+      }
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return res.json();
+  } catch (err) {
+    return await revokeUID(brokerUrl, uid, hostToken);
   }
-  return res.json();
 }
 
 export async function extendSession(brokerUrl, uid, hostToken, minutes = 15) {

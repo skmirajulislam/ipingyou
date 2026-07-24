@@ -1655,6 +1655,14 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
         }
 
         case 'extend': {
+          const initialTtlMs = 30 * 60 * 1000;
+          const totalTtlMs = initialTtlMs + (sessionState.extraMinutes || 0) * 60 * 1000;
+          const remainingMs = Math.max(0, totalTtlMs - (Date.now() - (sessionState.startTime || Date.now())));
+          const curMins = Math.floor(remainingMs / 60000);
+          const curSecs = Math.floor((remainingMs % 60000) / 1000);
+
+          console.log(chalk.cyan(`\n  ⏱️  Current Live Session TTL Remaining: ${chalk.bold.yellow(curMins + 'm ' + curSecs + 's')}`));
+
           const { extendMins } = await inquirer.prompt([{
             type: 'list',
             name: 'extendMins',
@@ -1663,9 +1671,15 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               { name: '⏱️ +15 Minutes', value: 15 },
               { name: '⏱️ +30 Minutes', value: 30 },
               { name: '⏱️ +60 Minutes (1 Hour)', value: 60 },
-              { name: '⏱️ +120 Minutes (2 Hours)', value: 120 }
+              { name: '⏱️ +120 Minutes (2 Hours)', value: 120 },
+              { name: '🔙 Cancel (Keep current TTL)', value: 0 }
             ]
           }]);
+
+          if (extendMins === 0) {
+            console.log(chalk.dim('  Session extension cancelled.'));
+            return waitForAction();
+          }
 
           try {
             const result = await extendSession(BROKER_URL, uid, sessionState.hostToken, extendMins);
