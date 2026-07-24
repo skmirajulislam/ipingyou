@@ -1615,7 +1615,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
       switch (action) {
         case 'qr': {
-          generateTerminalQR(uid, password, BROKER_URL);
+          await generateTerminalQR(uid, password, BROKER_URL);
           return waitForAction();
         }
 
@@ -1666,18 +1666,19 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           const { extendMins } = await inquirer.prompt([{
             type: 'list',
             name: 'extendMins',
-            message: 'Select session extension duration:',
+            message: 'Select session duration adjustment:',
             choices: [
-              { name: '⏱️ +15 Minutes', value: 15 },
-              { name: '⏱️ +30 Minutes', value: 30 },
-              { name: '⏱️ +60 Minutes (1 Hour)', value: 60 },
-              { name: '⏱️ +120 Minutes (2 Hours)', value: 120 },
+              { name: '➕ Extend +15 Minutes', value: 15 },
+              { name: '➕ Extend +30 Minutes', value: 30 },
+              { name: '➕ Extend +60 Minutes (1 Hour)', value: 60 },
+              { name: '➖ Shrink -15 Minutes', value: -15 },
+              { name: '➖ Shrink -30 Minutes', value: -30 },
               { name: '🔙 Cancel (Keep current TTL)', value: 0 }
             ]
           }]);
 
           if (extendMins === 0) {
-            console.log(chalk.dim('  Session extension cancelled.'));
+            console.log(chalk.dim('  Session extension/shrink cancelled.'));
             return waitForAction();
           }
 

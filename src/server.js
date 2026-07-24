@@ -254,6 +254,13 @@ app.get('/status/:uid', generalLimiter, (req, res) => {
   if (!entry || Date.now() - entry.createdAt > TTL_MS) {
     return res.status(404).json({ active: false });
   }
+
+  // Check if requesting client IP was specifically kicked by host
+  const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (entry.kickedIps && entry.kickedIps.has(clientIp)) {
+    return res.json({ active: false, kicked: true, reason: 'Access revoked by host for your IP' });
+  }
+
   res.json({ active: true, ttlRemainingMs: Math.max(0, TTL_MS - (Date.now() - entry.createdAt)) });
 });
 
@@ -275,6 +282,8 @@ app.post('/kick/:uid', generalLimiter, (req, res) => {
 
   const { clientIp } = req.body || {};
   if (clientIp) {
+    entry.kickedIps = entry.kickedIps || new Set();
+    entry.kickedIps.add(clientIp);
     entry.approvals = entry.approvals.filter(a => a.ip !== clientIp);
     console.log(`👢 Host kicked client IP ${clientIp} from session ${uid}`);
   } else {
@@ -287,7 +296,7 @@ app.post('/kick/:uid', generalLimiter, (req, res) => {
 
 /**
  * POST /extend/:uid
- * Extends session TTL by specified minutes (default 15).
+ * Extends or shrinks session TTL by specified minutes (default 15).
  * Protected by hostToken.
  */
 app.post('/extend/:uid', generalLimiter, (req, res) => {
@@ -301,11 +310,14 @@ app.post('/extend/:uid', generalLimiter, (req, res) => {
     return res.status(401).json({ error: 'Unauthorized host token' });
   }
 
-  const minutes = Math.min(120, Math.max(5, parseInt(req.body?.minutes || 15, 10)));
+  const minutes = parseInt(req.body?.minutes || 15, 10);
   const addMs = minutes * 60 * 1000;
-  entry.createdAt = (entry.createdAt || Date.now()) + addMs;
+  
+  // Support extend (+) and shrink (-), ensuring at least 60s remaining
+  const minCreatedAt = Date.now() - TTL_MS + 60000;
+  entry.createdAt = Math.min(Date.now(), Math.max(minCreatedAt, (entry.createdAt || Date.now()) + addMs));
 
-  console.log(`⏱️ Extended session ${uid} by ${minutes} minutes`);
+  console.log(`⏱️ Adjusted session ${uid} duration by ${minutes} minutes`);
   res.json({ success: true, extendedMinutes: minutes, ttlRemainingMs: Math.max(0, TTL_MS - (Date.now() - entry.createdAt)) });
 });
 

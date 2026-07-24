@@ -131,13 +131,29 @@ class QRCodeGenerator {
  * @param {string} password 
  * @param {string} [brokerUrl] 
  */
-export function generateTerminalQR(uid, password, brokerUrl = '') {
+export async function generateTerminalQR(uid, password, brokerUrl = '') {
   const connectionCommand = `npx @miraj181/ipingyou@latest connect --uid ${uid} --password ${password}`;
-  const qr = new QRCodeGenerator(connectionCommand);
-
+  
   console.log('');
   console.log(chalk.bold.cyan('  📱 REAL 2D VISUAL QR CODE (SCAN WITH CAMERA / APP):'));
-  console.log(qr.render());
+
+  let qrOutput = null;
+  try {
+    const qrcodeModule = await import('qrcode');
+    const qrFn = qrcodeModule.default || qrcodeModule;
+    if (qrFn && typeof qrFn.toString === 'function') {
+      qrOutput = await qrFn.toString(connectionCommand, { type: 'terminal', small: true });
+    }
+  } catch {
+    // Fallback to internal half-block renderer
+  }
+
+  if (!qrOutput) {
+    const qr = new QRCodeGenerator(connectionCommand);
+    qrOutput = qr.render();
+  }
+
+  console.log(qrOutput);
 
   const border = '█'.repeat(58);
   const padding = '█' + ' '.repeat(56) + '█';
