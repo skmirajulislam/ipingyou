@@ -497,6 +497,47 @@ function getCurrentSshUsername() {
   return os.userInfo().username || process.env.USER || process.env.USERNAME || '';
 }
 
+function expandAuthorizedKeysPath(pattern, username, homedir) {
+  const expanded = String(pattern || '')
+    .replace(/%%/g, '\0PERCENT\0')
+    .replace(/%h/g, homedir)
+    .replace(/%u/g, username)
+    .replace(/\0PERCENT\0/g, '%');
+  return path.isAbsolute(expanded) ? expanded : path.join(homedir, expanded);
+}
+
+async function getSshdAuthorizedKeysPaths(username, homedir) {
+  const defaults = ['.ssh/authorized_keys'];
+  if (process.platform === 'win32') return defaults.map(item => path.join(homedir, item));
+
+  const result = await getSshdEffectiveConfig(username);
+  if (!result?.stdout) return defaults.map(item => path.join(homedir, item));
+
+  const line = result.stdout.split('\n').find(value => value.toLowerCase().startsWith('authorizedkeysfile '));
+  if (!line) return defaults.map(item => path.join(homedir, item));
+
+  const patterns = line.trim().split(/\s+/).slice(1).filter(Boolean);
+  if (patterns.length === 0) return defaults.map(item => path.join(homedir, item));
+
+  return [...new Set(patterns.map(pattern => expandAuthorizedKeysPath(pattern, username, homedir)))];
+}
+
+async function getSshdEffectiveConfig(username) {
+  const candidates = ['sshd', '/usr/sbin/sshd', '/usr/local/sbin/sshd'];
+  for (const binary of candidates) {
+    const result = await execa(binary, ['-T', '-C', `user=${username},host=localhost,addr=127.0.0.1`], {
+      reject: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).catch(() => null);
+
+    if (result?.exitCode !== 0 || !result?.stdout) continue;
+
+    return result;
+  }
+
+  return null;
+}
+
 async function verifyHostAcceptsEphemeralKey(username, keyPath, port = 22) {
   const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
   const target = process.platform === 'win32' ? '127.0.0.1' : 'localhost';
@@ -532,7 +573,33 @@ function showPasswordlessHostHint() {
   console.log(chalk.dim('     StrictModes rejecting ~/.ssh permissions, or this macOS user is not allowed for Remote Login.'));
 }
 
-async function injectPublicKey(pubKey) {
+async function showPasswordlessDiagnostics(username, homedir) {
+  if (process.platform === 'win32') return;
+
+  const result = await getSshdEffectiveConfig(username);
+  if (result?.exitCode !== 0 || !result?.stdout) return;
+
+  const config = new Map(result.stdout.split('\n').map(line => {
+    const [key, ...rest] = line.trim().split(/\s+/);
+    return [key, rest.join(' ')];
+  }));
+  const interesting = ['pubkeyauthentication', 'authorizedkeysfile', 'authorizedkeyscommand', 'strictmodes', 'passwordauthentication', 'kbdinteractiveauthentication'];
+
+  console.log(chalk.dim('     sshd effective settings:'));
+  for (const key of interesting) {
+    if (config.has(key)) console.log(chalk.dim(`       ${key} ${config.get(key)}`));
+  }
+  if (config.get('pubkeyauthentication') === 'no') {
+    console.log(chalk.yellow('     Enable PubkeyAuthentication in sshd_config, then restart SSH.'));
+  }
+  if (config.get('authorizedkeyscommand') && config.get('authorizedkeyscommand') !== 'none') {
+    console.log(chalk.yellow('     This host uses AuthorizedKeysCommand; file-based key injection may be ignored.'));
+  }
+  const authPaths = await getSshdAuthorizedKeysPaths(username, homedir);
+  console.log(chalk.dim(`     Checked key file(s): ${authPaths.join(', ')}`));
+}
+
+async function injectPublicKey(pubKey, username = getCurrentSshUsername()) {
   const homedir = os.homedir();
   if (!homedir) {
     throw new Error('Could not resolve the current user home directory for authorized_keys');
@@ -544,25 +611,44 @@ async function injectPublicKey(pubKey) {
     } catch {}
   }
 
-  const sshDir = path.join(homedir, '.ssh');
-
-  if (!fs.existsSync(sshDir)) {
-    await fs.promises.mkdir(sshDir, { mode: 0o700, recursive: true });
-  }
-  try {
-    await fs.promises.chmod(sshDir, 0o700);
-  } catch {}
-
-  const authKeysPath = path.join(sshDir, 'authorized_keys');
-  const existing = await fs.promises.lstat(authKeysPath).catch(() => null);
-  if (existing?.isSymbolicLink()) {
-    throw new Error('Refusing to modify a symlinked authorized_keys file');
-  }
   const authorizedKey = `no-agent-forwarding,no-X11-forwarding ${pubKey}`;
-  await fs.promises.appendFile(authKeysPath, `\n${authorizedKey}\n`, { mode: 0o600 });
-  try {
-    await fs.promises.chmod(authKeysPath, 0o600);
-  } catch {}
+  const authKeysPaths = await getSshdAuthorizedKeysPaths(username, homedir);
+  const injectedFiles = [];
+  const skippedFiles = [];
+
+  for (const authKeysPath of authKeysPaths) {
+    try {
+      const sshDir = path.dirname(authKeysPath);
+      if (!path.resolve(authKeysPath).startsWith(path.resolve(homedir) + path.sep)) {
+        skippedFiles.push(`${authKeysPath} (outside home)`);
+        continue;
+      }
+
+      if (!fs.existsSync(sshDir)) {
+        await fs.promises.mkdir(sshDir, { mode: 0o700, recursive: true });
+      }
+      try { await fs.promises.chmod(sshDir, 0o700); } catch {}
+
+      const existing = await fs.promises.lstat(authKeysPath).catch(() => null);
+      if (existing?.isSymbolicLink()) {
+        skippedFiles.push(`${authKeysPath} (symlink)`);
+        continue;
+      }
+
+      const current = await fs.promises.readFile(authKeysPath, 'utf8').catch(() => '');
+      if (!current.includes(authorizedKey)) {
+        await fs.promises.appendFile(authKeysPath, `${current.endsWith('\n') || current.length === 0 ? '' : '\n'}${authorizedKey}\n`, { mode: 0o600 });
+      }
+      try { await fs.promises.chmod(authKeysPath, 0o600); } catch {}
+      injectedFiles.push(authKeysPath);
+    } catch (err) {
+      skippedFiles.push(`${authKeysPath} (${err.message})`);
+    }
+  }
+
+  if (injectedFiles.length === 0) {
+    throw new Error(`Could not write any sshd AuthorizedKeysFile path${skippedFiles.length ? `: ${skippedFiles.join('; ')}` : ''}`);
+  }
 
   // Windows Administrators authorized keys handling
   let adminAuthKeysPath = null;
@@ -580,19 +666,21 @@ async function injectPublicKey(pubKey) {
     } catch {}
   }
 
-  return { authKeysPath, adminAuthKeysPath, authorizedKey };
+  return { authKeysPath: injectedFiles[0], authKeysPaths: injectedFiles, adminAuthKeysPath, authorizedKey, skippedFiles };
 }
 
-async function removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath = null) {
-  if (fs.existsSync(authKeysPath)) {
-    const stat = await fs.promises.lstat(authKeysPath);
-    if (!stat.isSymbolicLink()) {
-      let keys = await fs.promises.readFile(authKeysPath, 'utf8');
-      keys = keys.replace(`\n${authorizedKey}\n`, '');
-      await fs.promises.writeFile(authKeysPath, keys);
-      try {
-        await fs.promises.chmod(authKeysPath, 0o600);
-      } catch {}
+async function removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath = null, authKeysPaths = null) {
+  for (const keyPath of new Set((authKeysPaths || [authKeysPath]).filter(Boolean))) {
+    if (fs.existsSync(keyPath)) {
+      const stat = await fs.promises.lstat(keyPath);
+      if (!stat.isSymbolicLink()) {
+        let keys = await fs.promises.readFile(keyPath, 'utf8');
+        keys = keys.replace(`${authorizedKey}\n`, '').replace(`\n${authorizedKey}`, '');
+        await fs.promises.writeFile(keyPath, keys);
+        try {
+          await fs.promises.chmod(keyPath, 0o600);
+        } catch {}
+      }
     }
   }
   if (adminAuthKeysPath && fs.existsSync(adminAuthKeysPath)) {
@@ -1693,12 +1781,12 @@ export async function startHostMode() {
     let injectedKey = null;
     try {
       ephemeralKey = await generateEphemeralKey();
-      injectedKey = await injectPublicKey(ephemeralKey.pubKey);
-      const { authKeysPath, adminAuthKeysPath, authorizedKey } = injectedKey;
       const sshUsername = getCurrentSshUsername();
       if (!sshUsername) {
         throw new Error('Could not resolve the current SSH username for passwordless entry');
       }
+      injectedKey = await injectPublicKey(ephemeralKey.pubKey, sshUsername);
+      const { authKeysPath, authKeysPaths, adminAuthKeysPath, authorizedKey } = injectedKey;
       await verifyHostAcceptsEphemeralKey(sshUsername, ephemeralKey.keyPath, targetPort);
 
       serviceConfig.privateKey = ephemeralKey.privKey;
@@ -1706,7 +1794,7 @@ export async function startHostMode() {
 
       addCleanupHook(async () => {
         console.log(chalk.dim('     Removing ephemeral public key...'));
-        await removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath);
+        await removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath, authKeysPaths);
         try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
         try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
       });
@@ -1714,7 +1802,7 @@ export async function startHostMode() {
       logSessionEvent('host_ephemeral_key_ready');
     } catch (err) {
       if (injectedKey) {
-        await removePublicKey(injectedKey.authKeysPath, injectedKey.authorizedKey, injectedKey.adminAuthKeysPath).catch(() => {});
+        await removePublicKey(injectedKey.authKeysPath, injectedKey.authorizedKey, injectedKey.adminAuthKeysPath, injectedKey.authKeysPaths).catch(() => {});
       }
       if (ephemeralKey) {
         try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
@@ -1722,6 +1810,7 @@ export async function startHostMode() {
       }
       console.log(chalk.yellow(`  ⚠️  Could not prepare ephemeral SSH key: ${err.message}`));
       showPasswordlessHostHint();
+      await showPasswordlessDiagnostics(getCurrentSshUsername(), os.homedir()).catch(() => {});
       console.log(chalk.dim('     Client will need to use standard OS password.'));
       logSessionEvent('host_ephemeral_key_failed', { error: err.message }, 'warn');
     }
