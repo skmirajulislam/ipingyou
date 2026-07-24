@@ -267,6 +267,9 @@ program
   .description('Start host mode — allow remote access to this machine')
   .option('-q, --qr', 'Display ANSI connection QR Code on startup')
   .option('-r, --read-only', 'Enable Read-Only Shell Mode for guests')
+  .option('--record', 'Record interactive SSH session to .cast file')
+  .option('--enable-web', 'Start mobile control center Web UI')
+  .option('--deny <patterns>', 'Deny dangerous command patterns (e.g. "rm -rf,sudo")')
   .action(async (commandOptions) => {
     try {
       const opts = program.opts();
@@ -508,9 +511,31 @@ program
   .option('-n, --lines <count>', 'Number of recent events to show', '25')
   .option('--type <type>', 'Filter by event type (e.g. ssh, scp, ai)')
   .option('--json', 'Output raw JSON lines')
+  .option('--ai-summary', 'Generate Groq AI post-session executive summary')
+  .option('--export <format>', 'Export signed audit log (json or csv)')
+  .option('--verify <file>', 'Verify cryptographic signature of audit file')
   .action(async (commandOptions) => {
     try {
       showBanner();
+
+      if (commandOptions.aiSummary) {
+        const { generateAiSessionSummary } = await import('./lib/services/aisummary.js');
+        await generateAiSessionSummary();
+        return;
+      }
+
+      if (commandOptions.export) {
+        const { exportSignedAuditLog } = await import('./lib/services/auditSigner.js');
+        exportSignedAuditLog(commandOptions.export);
+        return;
+      }
+
+      if (commandOptions.verify) {
+        const { verifySignedAuditLog } = await import('./lib/services/auditSigner.js');
+        verifySignedAuditLog(commandOptions.verify);
+        return;
+      }
+
       const fs = await import('node:fs');
       const os = await import('node:os');
       const pathMod = await import('node:path');

@@ -36,6 +36,11 @@ import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithB
 import { cleanupSessionLog, getSessionLogPath, initSessionLog, logSessionEvent, recordEvent } from '../lib/mod/session-log.js';
 import { notifyDesktop } from '../lib/mod/notifier.js';
 import { generateTerminalQR } from '../lib/mod/qrcode.js';
+import { autoCopyConnectCommand } from '../lib/mod/clipboard.js';
+import { startMobileWebUI } from '../lib/services/webui.js';
+import { formatLatencyBadge, measureLatency } from '../lib/services/ping.js';
+import { SessionRecorder } from '../lib/services/recorder.js';
+import { CommandGuardrails } from '../lib/services/guardrails.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -2129,6 +2134,20 @@ export async function startHostMode(options = {}) {
   await waitForValue(() => sessionState.hostToken, 30000, 'Cloudflare tunnel and Broker startup');
 
   setRevokeOnExit(uid, BROKER_URL, () => sessionState.hostToken);
+
+  if (options.record) {
+    sessionState.recorder = new SessionRecorder(uid);
+  }
+  if (options.deny) {
+    sessionState.guardrails = new CommandGuardrails(options.deny);
+    console.log(chalk.yellow(`  🛡️  Command Guardrails active: ${options.deny}`));
+  }
+  if (options.enableWeb) {
+    await startMobileWebUI({ uid, password, sessionState });
+  }
+
+  const connectCmd = `npx @miraj181/ipingyou@latest connect --uid ${uid} --password ${password}`;
+  await autoCopyConnectCommand(connectCmd);
 
   await hostDashboard(uid, password, serviceConfig, tunnelProcess, sessionState);
 }
