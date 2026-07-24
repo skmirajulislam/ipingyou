@@ -215,8 +215,21 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
       recordEvent('ssh_session_ended', { hostname, exitCode: 0 });
     } else if (result.exitCode === 255) {
       console.log('');
-      console.error(chalk.red('  ❌ SSH connection failed (exit code 255)'));
-      recordEvent('ssh_session_failed', { hostname, exitCode: 255 });
+      console.error(chalk.yellow('  ⚡ SSH connection dropped unexpectedly (network glitch).'));
+      recordEvent('ssh_session_interrupted', { hostname, exitCode: 255 });
+
+      const { autoRetry } = await inquirer.prompt([{
+        type: 'confirm',
+        name: 'autoRetry',
+        message: 'Re-establish connection automatically (Auto-Reconnect window)?',
+        default: true,
+      }]);
+
+      if (autoRetry) {
+        console.log(chalk.cyan('  🔄 Retrying SSH connection...'));
+        await new Promise(r => setTimeout(r, 2000));
+        return connectSSH(username, hostname, privateKeyPath, persistKnownHosts);
+      }
     } else {
       console.log('');
       console.error(chalk.red(`  ❌ SSH exited with code ${result.exitCode}`));
@@ -226,8 +239,28 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
     if (spinner) spinner.fail(privateKeyPath ? 'Passwordless key verification failed' : 'SSH handshake failed');
     console.error(chalk.red(`  ❌ SSH error: ${err.message}`));
     if (privateKeyPath) {
-      console.log(chalk.yellow('  Passwordless key authentication failed before opening the interactive shell.'));
-      console.log(chalk.dim('  Ask the host to restart host mode. The host will now validate local sshd key acceptance before sharing keys.'));
+      console.log('');
+      console.log(chalk.yellow('  ⚠️ Ephemeral key authentication failed before opening the interactive shell.'));
+      const { fallbackPassword } = await inquirer.prompt([{
+        type: 'confirm',
+        name: 'fallbackPassword',
+        message: 'Would you like to fall back to password authentication?',
+        default: true,
+      }]);
+
+      if (fallbackPassword) {
+        const { altUsername } = await inquirer.prompt([{
+          type: 'input',
+          name: 'altUsername',
+          message: 'Enter SSH Username:',
+          default: username || os.userInfo().username,
+        }]);
+        return connectSSH(altUsername, hostname, null, persistKnownHosts);
+      } else {
+        console.log(chalk.red('  ❌ Connection aborted. Direct unauthenticated access is denied.'));
+        recordEvent('ssh_key_auth_declined_fallback', { hostname });
+        return;
+      }
     }
   }
 }

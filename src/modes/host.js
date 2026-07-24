@@ -32,8 +32,10 @@ import { createSpinner, networkSpinner, typeText } from '../lib/mod/animations.j
 import { startChatServer, openLocalChatUI } from '../lib/services/chat.js';
 import { secureSensitive } from '../lib/mod/secure-print.js';
 import { spawnTunnelSupervised } from '../lib/services/tunnel.js';
-import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID } from '../lib/client/broker.js';
+import { decideApprovalRequest, fetchApprovalRequests, pingBroker, registerWithBroker, revokeUID, kickClient, extendSession } from '../lib/client/broker.js';
 import { cleanupSessionLog, getSessionLogPath, initSessionLog, logSessionEvent, recordEvent } from '../lib/mod/session-log.js';
+import { notifyDesktop } from '../lib/mod/notifier.js';
+import { generateTerminalQR } from '../lib/mod/qrcode.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 let BROKER_URL = process.env.BROKER_URL || 'https://ipingyou.onrender.com';
@@ -1566,6 +1568,9 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
     try {
       const choices = [
         { name: '✅ Review pending client approvals', value: 'approvals' },
+        { name: '📱 Display Connection QR Code & Quick Info', value: 'qr' },
+        { name: '👢 Kick / Revoke Client Session', value: 'kick' },
+        { name: '⏱️ Extend Session TTL (+15m / +60m)', value: 'extend' },
         { name: '📡 See detailed client telemetry', value: 'show' },
         { name: '📄 View live client activity logs', value: 'logs' },
         { name: '📄 View host session activity logs', value: 'host_logs' },
@@ -1600,6 +1605,73 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
       logSessionEvent('host_action_selected', { action });
 
       switch (action) {
+        case 'qr': {
+          generateTerminalQR(uid, password, BROKER_URL);
+          return waitForAction();
+        }
+
+        case 'kick': {
+          try {
+            console.log(chalk.dim('\n  Fetching active clients...'));
+            const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
+            const approved = (data.approvals || []).filter(item => item.status === 'approved' || item.ip);
+            if (approved.length === 0) {
+              console.log(chalk.yellow('  No active client IP approvals found. Revoking entire session instead?'));
+            }
+
+            const clientChoices = approved.map(a => ({
+              name: `Client IP: ${a.ip || 'unknown'} (ID: ${a.id})`,
+              value: a.ip
+            }));
+            clientChoices.push({ name: '🚨 Revoke ENTIRE Session & Kick ALL Clients', value: '__ALL__' });
+            clientChoices.push({ name: '🔙 Cancel', value: '__CANCEL__' });
+
+            const { targetClient } = await inquirer.prompt([{
+              type: 'list',
+              name: 'targetClient',
+              message: 'Select a client to kick:',
+              choices: clientChoices
+            }]);
+
+            if (targetClient === '__CANCEL__') return waitForAction();
+
+            const clientIpToKick = targetClient === '__ALL__' ? null : targetClient;
+            await kickClient(BROKER_URL, uid, sessionState.hostToken, clientIpToKick);
+            console.log(chalk.green(`  ✅ ${clientIpToKick ? `Kicked client IP ${clientIpToKick}` : 'All clients kicked & session revoked!'}`));
+            logSessionEvent('host_client_kicked', { targetClient });
+          } catch (err) {
+            console.log(chalk.red(`  ❌ Failed to kick client: ${err.message}`));
+          }
+          return waitForAction();
+        }
+
+        case 'extend': {
+          const { extendMins } = await inquirer.prompt([{
+            type: 'list',
+            name: 'extendMins',
+            message: 'Select session extension duration:',
+            choices: [
+              { name: '⏱️ +15 Minutes', value: 15 },
+              { name: '⏱️ +30 Minutes', value: 30 },
+              { name: '⏱️ +60 Minutes (1 Hour)', value: 60 },
+              { name: '⏱️ +120 Minutes (2 Hours)', value: 120 }
+            ]
+          }]);
+
+          try {
+            const result = await extendSession(BROKER_URL, uid, sessionState.hostToken, extendMins);
+            console.log(chalk.green(`  ✅ Session extended by +${extendMins} minutes!`));
+            if (result.ttlRemainingMs) {
+              const minsLeft = Math.round(result.ttlRemainingMs / 60000);
+              console.log(chalk.cyan(`  ⏱️  Total TTL Remaining: ~${minsLeft} minutes`));
+            }
+            logSessionEvent('host_session_extended', { minutes: extendMins });
+          } catch (err) {
+            console.log(chalk.red(`  ❌ Could not extend session: ${err.message}`));
+          }
+          return waitForAction();
+        }
+
         case 'approvals': {
           try {
             const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
@@ -1608,6 +1680,8 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               console.log(chalk.yellow('  No pending approval requests.'));
               return waitForAction();
             }
+
+            notifyDesktop('iPingYou Access Request', `Pending client approval request for UID ${uid}`);
 
             for (const request of pending) {
               let details = {};
@@ -1788,10 +1862,13 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 /**
  * Main Host Mode entry point.
  */
-export async function startHostMode() {
+export async function startHostMode(options = {}) {
   console.log('');
   console.log(chalk.bold.cyan('  🔒 HOST MODE — Allow Remote Access'));
   console.log(chalk.dim('  ─────────────────────────────────────'));
+  if (options.readOnly || options.viewOnly) {
+    console.log(chalk.yellow.bold('  🔒 Read-Only Shell Mode Enabled'));
+  }
   console.log('');
 
   const sessionLogPath = initSessionLog('host');

@@ -265,7 +265,9 @@ program
 program
   .command('host')
   .description('Start host mode — allow remote access to this machine')
-  .action(async () => {
+  .option('-q, --qr', 'Display ANSI connection QR Code on startup')
+  .option('-r, --read-only', 'Enable Read-Only Shell Mode for guests')
+  .action(async (commandOptions) => {
     try {
       const opts = program.opts();
       if (opts.broker) process.env.BROKER_URL = opts.broker;
@@ -275,7 +277,7 @@ program
       installShutdownHandlers();
       await checkDependencies();
       const { startHostMode } = await import('./modes/host.js');
-      await startHostMode();
+      await startHostMode(commandOptions);
     } catch (err) {
       fatal('host', err);
     }
@@ -285,6 +287,7 @@ program
   .command('connect')
   .description('Connect to a remote machine via its UID (SSH or SCP)')
   .option('-u, --uid <uid>', 'The remote host UID')
+  .option('-l, --limit <speed>', 'Limit SCP transfer speed in Kbit/s')
   .action(async (commandOptions) => {
     try {
       const opts = program.opts();
@@ -304,7 +307,7 @@ program
       installShutdownHandlers();
       await checkDependencies();
       const { startClientMode } = await import('./modes/client.js');
-      await startClientMode({ uid: commandOptions.uid });
+      await startClientMode(commandOptions);
     } catch (err) {
       fatal('connect', err);
     }

@@ -169,6 +169,40 @@ export async function decideApprovalRequest(brokerUrl, uid, requestId, decision,
   return res.json();
 }
 
+export async function kickClient(brokerUrl, uid, hostToken, clientIp = null) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(hostToken ? { 'x-host-token': hostToken } : {})
+  };
+  const res = await fetchWithLog('kick_client', `${brokerUrl}/kick/${uid}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ clientIp })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function extendSession(brokerUrl, uid, hostToken, minutes = 15) {
+  const headers = {
+    'Content-Type': 'application/json',
+    ...(hostToken ? { 'x-host-token': hostToken } : {})
+  };
+  const res = await fetchWithLog('extend_session', `${brokerUrl}/extend/${uid}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ minutes })
+  });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return res.json();
+}
+
 function getLocalIPv4() {
   try {
     const interfaces = os.networkInterfaces();
