@@ -24,3 +24,15 @@ export function generateUID() {
   }
   return uid;
 }
+
+/**
+ * Validate a UID string.
+ * @param {string} uid
+ * @returns {true|string} true if valid, or an error message string
+ */
+export function validateUID(uid) {
+  const trimmed = (uid || '').trim();
+  if (trimmed.length < 6 || trimmed.length > 16) return 'UID must be 6-16 characters';
+  if (!/^[a-z0-9]+$/.test(trimmed)) return 'UID should be lowercase alphanumeric';
+  return true;
+}

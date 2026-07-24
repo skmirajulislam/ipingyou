@@ -290,6 +290,15 @@ program
       const opts = program.opts();
       if (opts.broker) process.env.BROKER_URL = opts.broker;
 
+      if (commandOptions.uid) {
+        const { validateUID } = await import('./lib/mod/uid.js');
+        const uidCheck = validateUID(commandOptions.uid);
+        if (uidCheck !== true) {
+          console.error(`\x1b[31m  ❌ Invalid UID: ${uidCheck}\x1b[0m`);
+          process.exit(1);
+        }
+      }
+
       showBanner();
       showSystemInfo();
       installShutdownHandlers();

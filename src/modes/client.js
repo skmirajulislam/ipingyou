@@ -21,6 +21,7 @@ import os from 'node:os';
 import { cleanupAll, trackPID, untrackPID, addCleanupHook } from '../lib/mod/cleanup.js';
 import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, simulateTransferProgress } from '../lib/mod/animations.js';
 import { getConfig, saveAlias } from '../lib/mod/config.js';
+import { validateUID } from '../lib/mod/uid.js';
 import { pushTelemetry, requestHostApproval, resolveUID, revokeUID, waitForApproval } from '../lib/client/broker.js';
 import { calculateChecksum } from '../lib/mod/checksum.js';
 import { promptLocalPath, promptRemotePath } from '../lib/client/path-browser.js';
@@ -491,6 +492,11 @@ export async function startClientMode(options = {}) {
   }
 
   if (!targetUid && options.uid) {
+    const uidCheck = validateUID(options.uid);
+    if (uidCheck !== true) {
+      console.log(chalk.red(`  ❌ Invalid UID: ${uidCheck}`));
+      return;
+    }
     targetUid = options.uid.trim();
     const { password } = await inquirer.prompt([{
       type: 'password',
@@ -509,10 +515,7 @@ export async function startClientMode(options = {}) {
         name: 'uid',
         message: 'Enter the remote host\'s UID:',
         validate: (v) => {
-          const trimmed = v.trim();
-          if (trimmed.length < 6 || trimmed.length > 16) return 'UID must be 6-16 characters';
-          if (!/^[a-z0-9]+$/.test(trimmed)) return 'UID should be lowercase alphanumeric';
-          return true;
+          return validateUID(v);
         },
       },
       {

@@ -761,6 +761,7 @@ async function startManagedSshd(username, clientPubKey, clientKeyPath) {
     `PidFile ${pidPath}`,
     `AuthorizedKeysFile ${authKeysPath}`,
     `AllowUsers ${username}`,
+    'PermitRootLogin yes',
     'PubkeyAuthentication yes',
     'PasswordAuthentication no',
     'KbdInteractiveAuthentication no',
@@ -797,6 +798,36 @@ async function startManagedSshd(username, clientPubKey, clientKeyPath) {
     appendOutput(chunk);
   });
   child.on('exit', () => untrackPID(child.pid));
+
+  // Wait for sshd to be ready to accept connections
+  await new Promise((resolve, reject) => {
+    let attempts = 0;
+    const maxAttempts = 30; // 3 seconds total
+    const tryConnect = () => {
+      const sock = net.connect({ port, host: '127.0.0.1' }, () => {
+        sock.destroy();
+        resolve();
+      });
+      sock.on('error', () => {
+        attempts += 1;
+        if (attempts >= maxAttempts) {
+          reject(new Error(`Managed sshd did not start listening on port ${port} within 3s`));
+        } else {
+          setTimeout(tryConnect, 100);
+        }
+      });
+      sock.setTimeout(500, () => {
+        sock.destroy();
+        attempts += 1;
+        if (attempts >= maxAttempts) {
+          reject(new Error(`Managed sshd did not start listening on port ${port} within 3s`));
+        } else {
+          setTimeout(tryConnect, 100);
+        }
+      });
+    };
+    tryConnect();
+  });
 
   try {
     await verifyHostAcceptsEphemeralKey(username, clientKeyPath, port);

@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getAlias } from '../lib/mod/config.js';
+import { validateUID } from '../lib/mod/uid.js';
 import { resolveUID } from '../lib/client/broker.js';
 import { buildSshArgs, extractHostname, getKeyOnlyAuthOptions, quoteRemoteShell } from '../lib/services/ssh.js';
 import { addCleanupHook, cleanupAll, trackPID, untrackPID } from '../lib/mod/cleanup.js';
@@ -368,7 +369,7 @@ async function setupRemoteContext() {
     username = alias.username;
   } else {
     const answers = await inquirer.prompt([
-      { type: 'input', name: 'uid', message: 'Remote host UID:', validate: v => v.trim().length > 0 || 'Required' },
+      { type: 'input', name: 'uid', message: 'Remote host UID:', validate: v => validateUID(v) },
       { type: 'password', name: 'password', message: 'Session password:', mask: '*' },
       { type: 'input', name: 'username', message: 'SSH username:', default: process.env.USER || process.env.USERNAME || 'root' },
     ]);
@@ -705,7 +706,7 @@ async function tryAITransfer(task, context) {
   console.log(chalk.dim('  No active remote session — prompting for connection details.'));
 
   const answers = await inquirer.prompt([
-    { type: 'input', name: 'uid', message: 'Target host UID:', validate: v => v.trim().length > 0 || 'Required' },
+    { type: 'input', name: 'uid', message: 'Target host UID:', validate: v => validateUID(v) },
     { type: 'password', name: 'password', message: 'Session password:', mask: '*', validate: v => v.trim().length > 0 || 'Required' },
     { type: 'input', name: 'username', message: 'SSH username on host:', default: process.env.USER || process.env.USERNAME || 'root' }
   ]);
