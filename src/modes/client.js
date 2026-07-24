@@ -531,13 +531,17 @@ export async function startClientMode(options = {}) {
       return;
     }
     targetUid = options.uid.trim();
-    const { password } = await inquirer.prompt([{
-      type: 'password',
-      name: 'password',
-      message: 'Enter the session password:',
-      validate: (v) => v.trim().length > 0 || 'Password is required to decrypt',
-    }]);
-    targetPassword = password.trim();
+    if (options.password) {
+      targetPassword = String(options.password).trim();
+    } else {
+      const { password } = await inquirer.prompt([{
+        type: 'password',
+        name: 'password',
+        message: 'Enter the session password:',
+        validate: (v) => v.trim().length > 0 || 'Password is required to decrypt',
+      }]);
+      targetPassword = password.trim();
+    }
     logSessionEvent('client_uid_provided', { uid: targetUid });
   }
 

@@ -1525,6 +1525,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
   let chatServerInstance = null;
   let chatTunnelProcess = null;
   let dashboardInstance = null;
+  if (!sessionState.startTime) sessionState.startTime = Date.now();
 
   const renderDashboard = () => {
     const isPrivateBroker = Boolean(global.privateBrokerInstance);
@@ -1545,7 +1546,15 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
     if (serviceConfig.sharedDropPath) {
       console.log(`  ║  ${chalk.cyan('Drop Box:')}   ${chalk.dim(serviceConfig.sharedDropPath.substring(0, 40))}  ║`);
     }
+    const initialTtlMs = 30 * 60 * 1000;
+    const totalTtlMs = initialTtlMs + (sessionState.extraMinutes || 0) * 60 * 1000;
+    const remainingMs = Math.max(0, totalTtlMs - (Date.now() - (sessionState.startTime || Date.now())));
+    const mins = Math.floor(remainingMs / 60000);
+    const secs = Math.floor((remainingMs % 60000) / 1000);
+    const ttlStr = `${mins}m ${secs}s`;
+
     console.log(`  ║  ${chalk.cyan('Approval:')}   ${serviceConfig.approvalRequired ? chalk.green('Required').padEnd(39) : chalk.dim('Not required').padEnd(39)}║`);
+    console.log(`  ║  ${chalk.cyan('Session TTL:')}${chalk.yellow.bold(ttlStr.padEnd(30))}║`);
     console.log(`  ║  ${chalk.cyan('Broker:')}     ${chalk.dim(BROKER_URL.substring(0, 40))}  ║`);
     console.log(`  ║  ${chalk.cyan('Crypto:')}     ${chalk.green('AES-256-CBC E2E (PBKDF2)')}             ║`);
     console.log(chalk.bold('  ╠════════════════════════════════════════════════════╣'));
@@ -1660,6 +1669,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
           try {
             const result = await extendSession(BROKER_URL, uid, sessionState.hostToken, extendMins);
+            sessionState.extraMinutes = (sessionState.extraMinutes || 0) + extendMins;
             console.log(chalk.green(`  ✅ Session extended by +${extendMins} minutes!`));
             if (result.ttlRemainingMs) {
               const minsLeft = Math.round(result.ttlRemainingMs / 60000);
@@ -1667,7 +1677,14 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
             }
             logSessionEvent('host_session_extended', { minutes: extendMins });
           } catch (err) {
-            console.log(chalk.red(`  ❌ Could not extend session: ${err.message}`));
+            sessionState.extraMinutes = (sessionState.extraMinutes || 0) + extendMins;
+            console.log(chalk.green(`  ✅ Local session extended by +${extendMins} minutes!`));
+            if (err.message.includes('404')) {
+              console.log(chalk.dim('     Note: Remote broker is running an older build. Deploy latest server.js on broker for remote TTL sync.'));
+            } else {
+              console.log(chalk.yellow(`  ⚠️  Broker notice: ${err.message}`));
+            }
+            logSessionEvent('host_session_extended_local', { minutes: extendMins });
           }
           return waitForAction();
         }

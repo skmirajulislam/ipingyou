@@ -287,6 +287,7 @@ program
   .command('connect')
   .description('Connect to a remote machine via its UID (SSH or SCP)')
   .option('-u, --uid <uid>', 'The remote host UID')
+  .option('-p, --password <password>', 'The session decryption password')
   .option('-l, --limit <speed>', 'Limit SCP transfer speed in Kbit/s')
   .action(async (commandOptions) => {
     try {
