@@ -22,6 +22,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import net from 'node:net';
 import { generateUID } from '../lib/mod/uid.js';
 import { openUrl } from '../lib/mod/open-url.js';
 import { decryptAsync, encryptAsync } from '../lib/mod/crypto.js';
@@ -497,6 +498,26 @@ function getCurrentSshUsername() {
   return os.userInfo().username || process.env.USER || process.env.USERNAME || '';
 }
 
+function getSshdBinaryCandidates() {
+  return process.platform === 'win32'
+    ? []
+    : ['/usr/sbin/sshd', '/usr/local/sbin/sshd', '/opt/homebrew/sbin/sshd', 'sshd'];
+}
+
+async function findSshdBinary({ absoluteOnly = false } = {}) {
+  for (const binary of getSshdBinaryCandidates()) {
+    if (absoluteOnly && !path.isAbsolute(binary)) continue;
+    const result = await execa(binary, ['-V'], {
+      reject: false,
+      stdio: ['ignore', 'ignore', 'pipe'],
+      timeout: 3000,
+    }).catch(() => null);
+    // OpenSSH prints its version to stderr and exits 0 or 1 depending on build.
+    if (result && result.exitCode !== 127) return binary;
+  }
+  return null;
+}
+
 function expandAuthorizedKeysPath(pattern, username, homedir) {
   const expanded = String(pattern || '')
     .replace(/%%/g, '\0PERCENT\0')
@@ -523,8 +544,7 @@ async function getSshdAuthorizedKeysPaths(username, homedir) {
 }
 
 async function getSshdEffectiveConfig(username) {
-  const candidates = ['sshd', '/usr/sbin/sshd', '/usr/local/sbin/sshd'];
-  for (const binary of candidates) {
+  for (const binary of getSshdBinaryCandidates()) {
     const result = await execa(binary, ['-T', '-C', `user=${username},host=localhost,addr=127.0.0.1`], {
       reject: false,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -536,6 +556,22 @@ async function getSshdEffectiveConfig(username) {
   }
 
   return null;
+}
+
+async function getAvailableLocalPort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      const port = typeof address === 'object' && address ? address.port : null;
+      server.close(() => {
+        if (port) resolve(port);
+        else reject(new Error('Could not allocate a local SSH port'));
+      });
+    });
+  });
 }
 
 async function verifyHostAcceptsEphemeralKey(username, keyPath, port = 22) {
@@ -690,6 +726,95 @@ async function removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath = 
       await fs.promises.writeFile(adminAuthKeysPath, keys);
     } catch {}
   }
+}
+
+async function startManagedSshd(username, clientPubKey, clientKeyPath) {
+  if (process.platform === 'win32') {
+    throw new Error('Managed fallback sshd is not available on Windows');
+  }
+
+  const sshdBinary = await findSshdBinary({ absoluteOnly: true });
+  if (!sshdBinary) {
+    throw new Error('Could not find an absolute sshd binary for managed SSH fallback');
+  }
+
+  const baseDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'ipingyou-sshd-'));
+  const hostKeyPath = path.join(baseDir, 'ssh_host_ed25519_key');
+  const authKeysPath = path.join(baseDir, 'authorized_keys');
+  const configPath = path.join(baseDir, 'sshd_config');
+  const pidPath = path.join(baseDir, 'sshd.pid');
+  const logPath = path.join(baseDir, 'sshd.log');
+  const port = await getAvailableLocalPort();
+  const authorizedKey = `no-agent-forwarding,no-X11-forwarding ${clientPubKey}`;
+
+  await execa('ssh-keygen', ['-t', 'ed25519', '-f', hostKeyPath, '-N', '', '-C', 'ipingyou-managed-sshd'], {
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  await fs.promises.writeFile(authKeysPath, `${authorizedKey}\n`, { mode: 0o600 });
+  await fs.promises.chmod(baseDir, 0o700).catch(() => {});
+  await fs.promises.chmod(authKeysPath, 0o600).catch(() => {});
+
+  const config = [
+    `Port ${port}`,
+    'ListenAddress 127.0.0.1',
+    `HostKey ${hostKeyPath}`,
+    `PidFile ${pidPath}`,
+    `AuthorizedKeysFile ${authKeysPath}`,
+    `AllowUsers ${username}`,
+    'PubkeyAuthentication yes',
+    'PasswordAuthentication no',
+    'KbdInteractiveAuthentication no',
+    'ChallengeResponseAuthentication no',
+    'UsePAM no',
+    'StrictModes no',
+    'PermitTTY yes',
+    'AllowTcpForwarding yes',
+    'X11Forwarding no',
+    'PermitUserEnvironment no',
+    'PrintMotd no',
+    'LogLevel VERBOSE',
+    'Subsystem sftp internal-sftp',
+    '',
+  ].join('\n');
+  await fs.promises.writeFile(configPath, config, { mode: 0o600 });
+
+  const child = execa(sshdBinary, ['-D', '-e', '-f', configPath], {
+    reject: false,
+    all: true,
+    buffer: false,
+  });
+  trackPID(child.pid);
+
+  const maxLogBytes = 64 * 1024;
+  let output = Buffer.alloc(0);
+  const appendOutput = async (chunk) => {
+    const text = Buffer.from(chunk);
+    const next = Buffer.concat([output, text]);
+    output = next.length > maxLogBytes ? next.subarray(next.length - maxLogBytes) : next;
+    await fs.promises.appendFile(logPath, text).catch(() => {});
+  };
+  child.all?.on('data', chunk => {
+    appendOutput(chunk);
+  });
+  child.on('exit', () => untrackPID(child.pid));
+
+  try {
+    await verifyHostAcceptsEphemeralKey(username, clientKeyPath, port);
+  } catch (err) {
+    const detail = output.toString('utf8').trim();
+    killProcessTree(child.pid).catch(() => {});
+    await fs.promises.rm(baseDir, { recursive: true, force: true }).catch(() => {});
+    throw new Error(`Managed sshd rejected the key: ${err.message}${detail ? ` | sshd: ${detail.split('\n').slice(-4).join(' ')}` : ''}`);
+  }
+
+  return {
+    port,
+    logPath,
+    cleanup: async () => {
+      try { await killProcessTree(child.pid); } catch {}
+      await fs.promises.rm(baseDir, { recursive: true, force: true }).catch(() => {});
+    },
+  };
 }
 
 async function prepareSharedDropFolder(uid) {
@@ -1745,7 +1870,7 @@ export async function startHostMode() {
   }
 
   const serviceConfig = { type: serviceType === 'share' ? 'ssh' : serviceType, port: targetPort, protocol };
-  const targetUrl = `${protocol}://localhost:${targetPort}`;
+  let targetUrl = `${protocol}://localhost:${targetPort}`;
   logSessionEvent('host_service_selected', { serviceType, protocol, port: targetPort });
 
   if (serviceType === 'ssh' || serviceType === 'share') {
@@ -1779,9 +1904,10 @@ export async function startHostMode() {
     console.log(chalk.dim('  🔑 Generating ephemeral SSH key for passwordless entry...'));
     let ephemeralKey = null;
     let injectedKey = null;
+    let managedSshd = null;
+    const sshUsername = getCurrentSshUsername();
     try {
       ephemeralKey = await generateEphemeralKey();
-      const sshUsername = getCurrentSshUsername();
       if (!sshUsername) {
         throw new Error('Could not resolve the current SSH username for passwordless entry');
       }
@@ -1804,15 +1930,43 @@ export async function startHostMode() {
       if (injectedKey) {
         await removePublicKey(injectedKey.authKeysPath, injectedKey.authorizedKey, injectedKey.adminAuthKeysPath, injectedKey.authKeysPaths).catch(() => {});
       }
-      if (ephemeralKey) {
-        try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
-        try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
-      }
       console.log(chalk.yellow(`  ⚠️  Could not prepare ephemeral SSH key: ${err.message}`));
       showPasswordlessHostHint();
       await showPasswordlessDiagnostics(getCurrentSshUsername(), os.homedir()).catch(() => {});
-      console.log(chalk.dim('     Client will need to use standard OS password.'));
-      logSessionEvent('host_ephemeral_key_failed', { error: err.message }, 'warn');
+      logSessionEvent('host_system_ephemeral_key_failed', { error: err.message }, 'warn');
+
+      if (ephemeralKey && sshUsername) {
+        try {
+          console.log(chalk.dim('     Starting managed SSH fallback for passwordless entry...'));
+          managedSshd = await startManagedSshd(sshUsername, ephemeralKey.pubKey, ephemeralKey.keyPath);
+          targetPort = managedSshd.port;
+          serviceConfig.port = targetPort;
+          serviceConfig.privateKey = ephemeralKey.privKey;
+          serviceConfig.sshUsername = sshUsername;
+          serviceConfig.managedSshd = true;
+          targetUrl = `${protocol}://localhost:${targetPort}`;
+
+          addCleanupHook(async () => {
+            console.log(chalk.dim('     Stopping managed SSH fallback...'));
+            await managedSshd.cleanup();
+            try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
+            try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
+          });
+          console.log(chalk.green(`  ✓ Managed SSH fallback active on localhost:${targetPort}. Client will connect without system password!`));
+          console.log(chalk.dim(`     Managed sshd log: ${managedSshd.logPath}`));
+          logSessionEvent('host_managed_sshd_ready', { port: targetPort });
+        } catch (fallbackErr) {
+          if (managedSshd) await managedSshd.cleanup().catch(() => {});
+          try { await fs.promises.unlink(ephemeralKey.keyPath); } catch { }
+          try { await fs.promises.unlink(`${ephemeralKey.keyPath}.pub`); } catch { }
+          console.log(chalk.red(`  ❌ Managed SSH fallback failed: ${fallbackErr.message}`));
+          console.log(chalk.dim('     Client will need to use a working OS SSH key or the host must fix sshd public-key auth.'));
+          logSessionEvent('host_ephemeral_key_failed', { error: err.message, fallbackError: fallbackErr.message }, 'error');
+        }
+      } else {
+        console.log(chalk.dim('     Client will need to use standard OS password.'));
+        logSessionEvent('host_ephemeral_key_failed', { error: err.message }, 'warn');
+      }
     }
   } else {
     console.log(chalk.dim(`  ℹ️  Ensure your ${protocol.toUpperCase()} service is running on port ${targetPort}.`));
