@@ -102,12 +102,13 @@ export function buildSshArgs(hostname, privateKeyPath, extraOptions = [], option
     '-o', 'IdentitiesOnly=yes',
     ...(controlMaster ? getSshControlOptions(hostname) : ['-o', 'ControlMaster=no', '-o', 'ControlPath=none']),
     ...(privateKeyPath && keyOnly ? getKeyOnlyAuthOptions() : []),
-    ...extraOptions,
   ];
 
   if (privateKeyPath) {
     sshArgs.push('-i', privateKeyPath, '-o', 'IdentityAgent=none');
   }
+
+  sshArgs.push(...extraOptions);
 
   return sshArgs;
 }
