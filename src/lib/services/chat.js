@@ -1,8 +1,9 @@
 import http from 'node:http';
+import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { openUrl } from '../mod/open-url.js';
 import chalk from 'chalk';
-import { secureSensitiveUrl } from '../mod/secure-print.js';
+import { secureSensitive, secureSensitiveUrl } from '../mod/secure-print.js';
 
 const HTML_CONTENT = `
 <!DOCTYPE html>
@@ -106,6 +107,7 @@ const HTML_CONTENT = `
     }
 
     const sessionPassword = window.location.hash.substring(1);
+    const hostControlToken = new URLSearchParams(window.location.search).get('hostControlToken');
     if (!sessionPassword) {
       showBodyMessage('Fatal: Missing session password in URL hash. Cannot decrypt E2E chat.', 'red');
       throw new Error("Missing password");
@@ -205,6 +207,7 @@ const HTML_CONTENT = `
       input.focus();
       
       const encPayload = await encryptPayload({ type: 'join', sender: username });
+      if (hostControlToken) ws.send(JSON.stringify({ type: 'host_auth', token: hostControlToken }));
       ws.send(JSON.stringify({ type: 'join_event', username })); // Send unencrypted name for sidebar
       ws.send(JSON.stringify({ type: 'e2e', payload: encPayload }));
     };
@@ -280,8 +283,9 @@ export async function startChatServer(onClose) {
       }
     });
 
-    const wss = new WebSocketServer({ server });
+    const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 });
     const clients = new Map(); // ws -> username
+    const hostControlToken = crypto.randomBytes(32).toString('base64url');
 
     function broadcastState() {
       const users = Array.from(clients.values());
@@ -301,15 +305,28 @@ export async function startChatServer(onClose) {
     wss.on('connection', (ws) => {
       ws.on('message', (message) => {
         try {
+          if (message.length > 64 * 1024) return ws.close(1009, 'Message too large');
           const data = JSON.parse(message);
+          if (!data || typeof data !== 'object') return;
           
-          if (data.type === 'e2e') {
+          if (data.type === 'host_auth') {
+            if (typeof data.token === 'string'
+              && data.token.length === hostControlToken.length
+              && crypto.timingSafeEqual(Buffer.from(data.token), Buffer.from(hostControlToken))) {
+              ws.isHost = true;
+            }
+          } else if (data.type === 'e2e') {
             // E2E messages just get forwarded to all clients
+            if (!data.payload || typeof data.payload !== 'object'
+              || typeof data.payload.salt !== 'string' || typeof data.payload.iv !== 'string'
+              || typeof data.payload.ciphertext !== 'string'
+              || data.payload.salt.length > 64 || data.payload.iv.length > 64 || data.payload.ciphertext.length > 48 * 1024) return;
             broadcastMsg(data);
           } else if (data.type === 'join_event') {
-            clients.set(ws, data.username || `User_${Math.floor(Math.random()*1000)}`);
+            const username = String(data.username || `User_${Math.floor(Math.random()*1000)}`).slice(0, 64);
+            clients.set(ws, username);
             broadcastState();
-          } else if (data.type === 'host_close') {
+          } else if (data.type === 'host_close' && ws.isHost) {
             broadcastMsg({ type: 'close' });
             server.close();
             if (onClose) onClose();
@@ -327,16 +344,18 @@ export async function startChatServer(onClose) {
 
     server.listen(0, '127.0.0.1', () => {
       const port = server.address().port;
-      resolve({ port, server });
+      resolve({ port, server, hostControlToken });
     });
   });
 }
 
-export async function openLocalChatUI(port, password) {
+export async function openLocalChatUI(port, password, hostControlToken = null) {
   try {
-    const chatUrl = `http://localhost:${port}#${password}`;
+    const hostQuery = hostControlToken ? `?hostControlToken=${encodeURIComponent(hostControlToken)}` : '';
+    const chatUrl = `http://localhost:${port}${hostQuery}#${password}`;
     await openUrl(chatUrl);
   } catch {
-    console.log(chalk.dim(`     Unable to auto-open browser. Visit ${secureSensitiveUrl(`http://localhost:${port}`, password)}`));
+    const hostQuery = hostControlToken ? `?hostControlToken=${encodeURIComponent(secureSensitive(hostControlToken))}` : '';
+    console.log(chalk.dim(`     Unable to auto-open browser. Visit ${secureSensitiveUrl(`http://localhost:${port}${hostQuery}`, password)}`));
   }
 }

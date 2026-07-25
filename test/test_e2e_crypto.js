@@ -3,7 +3,6 @@
  */
 
 import { encrypt, decrypt } from '../src/lib/mod/crypto.js';
-import crypto from 'node:crypto';
 
 console.log('');
 console.log('═══════════════════════════════════════════════════');
@@ -49,11 +48,7 @@ console.log('');
 // 6. Wrong key MUST fail
 console.log('6. Wrong key test:');
 try {
-  const wrongKey = Buffer.from('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex');
-  const iv = Buffer.from(encrypted.iv, 'hex');
-  const decipher = crypto.createDecipheriv('aes-256-cbc', wrongKey, iv);
-  let dec = decipher.update(encrypted.ciphertext, 'base64', 'utf8');
-  dec += decipher.final('utf8');
+  const dec = decrypt(encrypted.iv, encrypted.ciphertext, 'wrong-password', encrypted.salt);
   if (dec === tunnelUrl) {
     console.log('   ❌ FAIL — wrong key decrypted to original plaintext');
     process.exit(1);
@@ -61,6 +56,18 @@ try {
   console.log('   ✅ PASS — wrong key did not recover original plaintext');
 } catch (err) {
   console.log('   ✅ PASS — wrong key throws:', err.message);
+}
+
+// 7. Authenticated encryption must reject any broker/network tampering.
+console.log('7. Tampered ciphertext test:');
+const tampered = Buffer.from(encrypted.ciphertext, 'base64');
+tampered[0] ^= 1;
+try {
+  decrypt(encrypted.iv, tampered.toString('base64'), password, encrypted.salt);
+  console.log('   ❌ FAIL — tampered ciphertext was accepted');
+  process.exit(1);
+} catch {
+  console.log('   ✅ PASS — tampering rejected by authentication tag');
 }
 
 console.log('');

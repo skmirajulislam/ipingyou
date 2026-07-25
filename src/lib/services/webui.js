@@ -9,6 +9,7 @@
 
 import express from 'express';
 import http from 'http';
+import crypto from 'node:crypto';
 import chalk from 'chalk';
 import { openUrl } from '../mod/open-url.js';
 
@@ -19,7 +20,18 @@ import { openUrl } from '../mod/open-url.js';
  */
 export async function startMobileWebUI({ uid, password, port = 8080, sessionState = {} }) {
   const app = express();
-  app.use(express.json());
+  const accessToken = crypto.randomBytes(32).toString('base64url');
+  app.disable('x-powered-by');
+  app.use(express.json({ limit: '10kb' }));
+  app.use((req, res, next) => {
+    const token = req.query.token;
+    if (typeof token !== 'string' || token.length !== accessToken.length
+      || !crypto.timingSafeEqual(Buffer.from(token), Buffer.from(accessToken))) {
+      return res.status(401).type('text').send('Unauthorized');
+    }
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
 
   // HTML Dashboard
   app.get('/', (req, res) => {
@@ -108,16 +120,16 @@ export async function startMobileWebUI({ uid, password, port = 8080, sessionStat
   });
 
   return new Promise((resolve) => {
-    const server = app.listen(port, () => {
-      const url = `http://localhost:${port}`;
+    const server = app.listen(port, '0.0.0.0', () => {
+      const url = `http://localhost:${port}/?token=${encodeURIComponent(accessToken)}`;
       if (sessionState) sessionState.webUrl = url;
       openUrl(url).catch(() => {});
       console.log(chalk.bold.cyan(`  📱 Mobile Web UI active on ${url}`));
       resolve({ server, url, port });
     }).on('error', () => {
-      const fallbackServer = app.listen(0, () => {
+      const fallbackServer = app.listen(0, '0.0.0.0', () => {
         const p = fallbackServer.address().port;
-        const url = `http://localhost:${p}`;
+        const url = `http://localhost:${p}/?token=${encodeURIComponent(accessToken)}`;
         if (sessionState) sessionState.webUrl = url;
         openUrl(url).catch(() => {});
         console.log(chalk.bold.cyan(`  📱 Mobile Web UI active on ${url}`));

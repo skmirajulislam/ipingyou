@@ -158,9 +158,23 @@ function generateHostToken(uid) {
   return crypto.createHmac('sha256', BROKER_SECRET).update(uid).digest('hex');
 }
 
+function tokensMatch(expected, received) {
+  if (typeof expected !== 'string' || typeof received !== 'string') return false;
+  const expectedBytes = Buffer.from(expected, 'utf8');
+  const receivedBytes = Buffer.from(received, 'utf8');
+  return expectedBytes.length === receivedBytes.length
+    && crypto.timingSafeEqual(expectedBytes, receivedBytes);
+}
+
+function getClientIp(req) {
+  // Express applies the configured proxy trust policy to req.ip. Never trust a
+  // caller-provided X-Forwarded-For value directly.
+  return req.ip || req.socket.remoteAddress || '';
+}
+
 function requireHostToken(req, res, entry) {
   const token = req.headers['x-host-token'];
-  if (!token || token !== entry.hostToken) {
+  if (!tokensMatch(entry.hostToken, token)) {
     recordViolation(req);
     res.status(403).json({ error: 'Forbidden — invalid or missing host authentication token' });
     return false;
@@ -170,7 +184,7 @@ function requireHostToken(req, res, entry) {
 
 function isEncryptedPayload(body) {
   return body
-    && /^[a-f0-9]{32}$/i.test(body.iv || '')
+    && /^(?:[a-f0-9]{24}|[a-f0-9]{32})$/i.test(body.iv || '')
     && /^[a-f0-9]{32}$/i.test(body.salt || '')
     && typeof body.ciphertext === 'string'
     && body.ciphertext.length > 0
@@ -256,7 +270,7 @@ app.get('/status/:uid', generalLimiter, (req, res) => {
   }
 
   // Check if requesting client IP was specifically kicked by host
-  const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const clientIp = getClientIp(req);
   if (entry.kickedIps && entry.kickedIps.has(clientIp)) {
     return res.json({ active: false, kicked: true, reason: 'Access revoked by host for your IP' });
   }
@@ -276,7 +290,7 @@ app.post('/kick/:uid', generalLimiter, (req, res) => {
   if (!entry) return res.status(404).json({ error: 'UID not found' });
 
   const hostToken = req.headers['x-host-token'];
-  if (!hostToken || hostToken !== entry.hostToken) {
+  if (!tokensMatch(entry.hostToken, hostToken)) {
     return res.status(401).json({ error: 'Unauthorized host token' });
   }
 
@@ -306,7 +320,7 @@ app.post('/extend/:uid', generalLimiter, (req, res) => {
   if (!entry) return res.status(404).json({ error: 'UID not found' });
 
   const hostToken = req.headers['x-host-token'];
-  if (!hostToken || hostToken !== entry.hostToken) {
+  if (!tokensMatch(entry.hostToken, hostToken)) {
     return res.status(401).json({ error: 'Unauthorized host token' });
   }
 
@@ -342,10 +356,11 @@ app.post('/register', strictLimiter, (req, res) => {
       return res.status(400).json({ error: 'Invalid UID format (6-16 chars)' });
     }
 
-    // Validate IV format — must be 32 hex chars (16 bytes)
-    if (!/^[a-f0-9]{32}$/i.test(iv)) {
+    // GCM uses a 12-byte nonce; accept legacy 16-byte CBC IVs until old
+    // clients have naturally completed their short-lived sessions.
+    if (!/^(?:[a-f0-9]{24}|[a-f0-9]{32})$/i.test(iv)) {
       recordViolation(req);
-      return res.status(400).json({ error: 'Invalid IV format (expected 32 hex chars)' });
+      return res.status(400).json({ error: 'Invalid IV format' });
     }
 
     if (!/^[a-f0-9]{32}$/i.test(salt)) {
@@ -364,18 +379,38 @@ app.post('/register', strictLimiter, (req, res) => {
       return res.status(503).json({ error: 'Broker is at maximum capacity. Please try again later.' });
     }
     const incomingBytes = encryptedPayloadBytes({ iv, ciphertext, salt });
-    const replacedBytes = entryPayloadBytes(store.get(uid));
+    const replacedBytes = encryptedPayloadBytes(store.get(uid));
     if (bufferedPayloadBytes - replacedBytes + incomingBytes > MAX_BUFFERED_PAYLOAD_BYTES) {
       return res.status(503).json({ error: 'Broker encrypted payload capacity reached. Please try again later.' });
     }
 
-    // Use provided host token if valid; otherwise generate a fresh one
-    const hostToken = (typeof providedHostToken === 'string' && HOST_TOKEN_FORMAT.test(providedHostToken))
-      ? providedHostToken
-      : generateHostToken(uid + Date.now().toString());
+    const existingEntry = store.get(uid);
+    // A reconnect may refresh a tunnel URL, but only its current host may do
+    // so. Public registration must never replace an active session.
+    if (existingEntry && !tokensMatch(existingEntry.hostToken, providedHostToken)) {
+      recordViolation(req);
+      return res.status(409).json({ error: 'UID is already registered by another host' });
+    }
 
-    // Store the encrypted blob as-is — broker NEVER decrypts
-    if (store.has(uid)) deleteStoreEntry(uid);
+    // Use a caller-generated token for an initial registration. It is retained
+    // across authenticated re-registrations so host-only controls keep working.
+    const hostToken = existingEntry?.hostToken || (
+      typeof providedHostToken === 'string' && HOST_TOKEN_FORMAT.test(providedHostToken)
+        ? providedHostToken
+        : generateHostToken(uid + Date.now().toString())
+    );
+
+    if (existingEntry) {
+      bufferedPayloadBytes = Math.max(0, bufferedPayloadBytes - encryptedPayloadBytes(existingEntry) + incomingBytes);
+      existingEntry.iv = iv;
+      existingEntry.ciphertext = ciphertext;
+      existingEntry.salt = salt;
+      existingEntry.approvalRequired = Boolean(approvalRequired);
+      existingEntry.oneTime = Boolean(oneTime);
+      return res.json({ status: 'registered', uid, hostToken, expiresIn: '1 hour' });
+    }
+
+    // Store the encrypted blob as-is — broker NEVER decrypts.
     store.set(uid, {
       iv,
       ciphertext,
@@ -448,7 +483,7 @@ app.get('/resolve/:uid', generalLimiter, (req, res) => {
       }
       
       // Client-specific E2E gating: verify client IP matches approved request IP
-      const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+      const clientIp = getClientIp(req);
       if (approved.ip && approved.ip !== clientIp) {
         return res.status(403).json({ error: 'Client IP mismatch — access denied' });
       }
@@ -511,7 +546,7 @@ app.post('/approval-request/:uid', generalLimiter, (req, res) => {
 
     // Generate cryptographically secure request ID
     const id = crypto.randomBytes(12).toString('hex');
-    const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+    const ip = getClientIp(req);
     const request = {
       id,
       iv: req.body.iv,
@@ -600,7 +635,7 @@ app.get('/approval-status/:uid/:requestId', generalLimiter, (req, res) => {
   const request = entry.approvals.find(item => item.id === req.params.requestId);
   if (!request) return res.status(404).json({ error: 'Request not found' });
   
-  const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  const clientIp = getClientIp(req);
   res.json({
     status: request.status,
     ip: clientIp,

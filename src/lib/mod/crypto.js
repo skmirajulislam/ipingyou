@@ -22,7 +22,7 @@ export function deriveKey(password, salt) {
 }
 
 /**
- * Encrypt a plaintext string with AES-256-CBC using a password.
+ * Encrypt a plaintext string with authenticated AES-256-GCM using a password.
  * @param {string} plaintext
  * @param {string} password
  * @returns {{ iv: string, ciphertext: string, salt: string }}
@@ -30,15 +30,13 @@ export function deriveKey(password, salt) {
 export function encrypt(plaintext, password) {
   const salt = crypto.randomBytes(16);
   const key = deriveKey(password, salt);
-  const iv = crypto.randomBytes(16);
-  
-  const cipher = crypto.createCipheriv('aes-256-cbc', key, iv);
-  let enc = cipher.update(plaintext, 'utf8', 'base64');
-  enc += cipher.final('base64');
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const enc = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final(), cipher.getAuthTag()]);
   
   return {
     iv: iv.toString('hex'),
-    ciphertext: enc,
+    ciphertext: enc.toString('base64'),
     salt: salt.toString('hex')
   };
 }
@@ -59,7 +57,8 @@ export async function encryptAsync(plaintext, password) {
 }
 
 /**
- * Decrypt a ciphertext with AES-256-CBC using a password and salt.
+ * Decrypt a ciphertext using AES-256-GCM. Legacy CBC records remain readable
+ * for sessions created before the authenticated format was introduced.
  * @param {string} ivHex  — 32-char hex IV
  * @param {string} cipherBase64
  * @param {string} password
@@ -70,7 +69,16 @@ export function decrypt(ivHex, cipherBase64, password, saltHex) {
   const salt = Buffer.from(saltHex, 'hex');
   const key = deriveKey(password, salt);
   const iv = Buffer.from(ivHex, 'hex');
-  
+  const encrypted = Buffer.from(cipherBase64, 'base64');
+
+  if (iv.length === 12) {
+    if (encrypted.length <= 16) throw new Error('Invalid authenticated ciphertext');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
+    decipher.setAuthTag(encrypted.subarray(-16));
+    return Buffer.concat([decipher.update(encrypted.subarray(0, -16)), decipher.final()]).toString('utf8');
+  }
+
+  // Backward compatibility for live sessions issued by versions before GCM.
   const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
   let dec = decipher.update(cipherBase64, 'base64', 'utf8');
   dec += decipher.final('utf8');

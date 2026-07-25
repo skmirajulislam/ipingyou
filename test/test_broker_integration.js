@@ -1,12 +1,53 @@
 /**
  * Full integration test — proves E2E encryption between CLI ↔ Broker
- * Run: node test_broker_integration.js
- * Requires: broker running on localhost:4000
+ * Run: node test/test_broker_integration.js
+ * Starts and stops an isolated local broker automatically.
  */
 
 import { encrypt, decrypt } from '../src/lib/mod/crypto.js';
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const BROKER = 'http://localhost:4000';
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+async function reservePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(err => err ? reject(err) : resolve(port));
+    });
+  });
+}
+
+async function startBroker() {
+  const port = await reservePort();
+  const child = spawn(process.execPath, [path.join(__dirname, '../src/server.js')], {
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1' },
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  let startupError = '';
+  child.stderr.on('data', chunk => { startupError += chunk.toString(); });
+  const broker = `http://127.0.0.1:${port}`;
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const res = await fetch(`${broker}/health`);
+      if (res.ok) return { broker, child };
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  child.kill();
+  throw new Error(`Broker did not start${startupError ? `: ${startupError.trim()}` : ''}`);
+}
+
+const { broker: BROKER, child: brokerProcess } = await startBroker();
+const stopBroker = () => {
+  if (!brokerProcess.killed) brokerProcess.kill('SIGTERM');
+};
+process.once('exit', stopBroker);
 
 async function test(name, fn) {
   try {
@@ -148,4 +189,4 @@ console.log('     Broker is zero-knowledge: never sees plaintext');
 console.log('══════════════════════════════════════════════════════════');
 console.log('');
 
-process.exit(0);
+stopBroker();

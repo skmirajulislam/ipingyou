@@ -23,7 +23,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import net from 'node:net';
-import { generateUID } from '../lib/mod/uid.js';
+import { generateSessionSecret, generateUID } from '../lib/mod/uid.js';
 import { openUrl } from '../lib/mod/open-url.js';
 import { decryptAsync, encryptAsync } from '../lib/mod/crypto.js';
 import { cleanupAll, killProcessTree, trackPID, untrackPID, setRevokeOnExit, addCleanupHook } from '../lib/mod/cleanup.js';
@@ -1805,7 +1805,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               chatTunnelProcess = null;
               chatServerInstance = null;
               delete serviceConfig.chatUrl;
-              const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
+              const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
               if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
               renderDashboard();
             }
@@ -1826,7 +1826,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           console.log(chalk.dim('  Provisioning Cloudflare tunnel for chat...'));
           chatTunnelProcess = await spawnTunnelSupervised(`http://localhost:${chatServerInstance.port}`, async (newUrl) => {
             serviceConfig.chatUrl = newUrl;
-            const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
+            const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
             if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
             renderDashboard();
           });
@@ -1835,7 +1835,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
 
           console.log(chalk.green('  ✅ Chat Room Live! Clients can now join.'));
           logSessionEvent('host_chat_started');
-          await openLocalChatUI(chatServerInstance.port, password);
+          await openLocalChatUI(chatServerInstance.port, password, chatServerInstance.hostControlToken);
           return waitForAction();
         }
 
@@ -1884,7 +1884,7 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
         }
 
         case 'reregister':
-          const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
+          const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
           if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
           logSessionEvent('host_broker_reregistered');
           return waitForAction();
@@ -1955,7 +1955,7 @@ export async function startHostMode(options = {}) {
       message: 'Enter a session password to encrypt the tunnel (leave blank to auto-generate):',
     },
   ]);
-  const password = pwdInput.trim() || generateUID();
+  const password = pwdInput.trim() || generateSessionSecret();
   console.log(`  ${chalk.green('✓')} Password: ${chalk.bold.white(secureSensitive(password))}`);
   console.log('');
 
@@ -2149,7 +2149,7 @@ export async function startHostMode(options = {}) {
   const tunnelProcess = await spawnTunnelSupervised(targetUrl, async (newUrl) => {
     sessionState.tunnelUrl = newUrl;
     // Register or re-register with broker when tunnel is spawned/respawned
-    const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig);
+    const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
     if (!res.success) {
       console.error(chalk.red(`\n  ❌ FATAL: Could not register with broker at ${BROKER_URL}`));
       logSessionEvent('host_broker_register_failed', { broker: BROKER_URL }, 'error');

@@ -25,6 +25,13 @@ export function generateUID() {
   return uid;
 }
 
+// Session secrets must be substantially stronger than human-shareable UIDs.
+// URL-safe base64 avoids shell and URL escaping surprises while providing 192
+// bits of entropy.
+export function generateSessionSecret() {
+  return crypto.randomBytes(24).toString('base64url');
+}
+
 /**
  * Validate a UID string.
  * @param {string} uid

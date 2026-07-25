@@ -11,6 +11,9 @@ const platformSource = fs.readFileSync(new URL('../src/lib/services/platform.js'
 const cleanupSource = fs.readFileSync(new URL('../src/lib/mod/cleanup.js', import.meta.url), 'utf8');
 const sshSource = fs.readFileSync(new URL('../src/lib/services/ssh.js', import.meta.url), 'utf8');
 const clientSource = fs.readFileSync(new URL('../src/modes/client.js', import.meta.url), 'utf8');
+const serverSource = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+const webUiSource = fs.readFileSync(new URL('../src/lib/services/webui.js', import.meta.url), 'utf8');
+const cryptoSource = fs.readFileSync(new URL('../src/lib/mod/crypto.js', import.meta.url), 'utf8');
 const packageJson = JSON.parse(
   fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8')
 );
@@ -77,6 +80,26 @@ for (const forbiddenCleanupPattern of [
 assert(
   cliSource.includes('STOP CURRENT SESSION'),
   'Emergency cleanup must require local typed confirmation'
+);
+assert(
+  serverSource.includes('function getClientIp(req)') && !serverSource.includes("req.headers['x-forwarded-for']"),
+  'Broker must not trust caller-controlled X-Forwarded-For headers'
+);
+assert(
+  serverSource.includes('UID is already registered by another host') && serverSource.includes('tokensMatch(existingEntry.hostToken, providedHostToken)'),
+  'Broker must authenticate session re-registration'
+);
+assert(
+  chatSource.includes("data.type === 'host_close' && ws.isHost") && chatSource.includes('hostControlToken'),
+  'Chat close control must require a host capability'
+);
+assert(
+  webUiSource.includes('accessToken') && webUiSource.includes('timingSafeEqual'),
+  'Mobile UI must require an access capability'
+);
+assert(
+  cryptoSource.includes("aes-256-gcm") && cryptoSource.includes('getAuthTag'),
+  'Session encryption must provide authenticated encryption'
 );
 
 for (const removedDependency of ['shell-quote', 'tree-kill', 'nanoid', 'open']) {

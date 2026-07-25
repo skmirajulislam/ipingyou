@@ -65,14 +65,14 @@ export async function checkUidStatus(brokerUrl, uid) {
   }
 }
 
-export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, serviceConfig) {
+export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, serviceConfig, hostToken = null) {
   const spinner = createSpinner('Encrypting session data...', cryptoSpinner).start();
 
   try {
     await new Promise(r => setTimeout(r, 600));
     const payload = JSON.stringify({ url: tunnelUrl, ...serviceConfig });
     const encrypted = await encryptAsync(payload, password);
-    const localHostToken = crypto.randomBytes(32).toString('hex');
+    const localHostToken = hostToken || crypto.randomBytes(32).toString('hex');
 
     spinner.text = 'Registering with broker...';
 
