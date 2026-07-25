@@ -121,11 +121,12 @@ export async function startMobileWebUI({ uid, password, port = 8080, sessionStat
 
   return new Promise((resolve) => {
     const server = app.listen(port, '0.0.0.0', () => {
-      const url = `http://localhost:${port}/?token=${encodeURIComponent(accessToken)}`;
+      const actualPort = server.address().port;
+      const url = `http://localhost:${actualPort}/?token=${encodeURIComponent(accessToken)}`;
       if (sessionState) sessionState.webUrl = url;
       openUrl(url).catch(() => {});
       console.log(chalk.bold.cyan(`  📱 Mobile Web UI active on ${url}`));
-      resolve({ server, url, port });
+      resolve({ server, url, port: actualPort });
     }).on('error', () => {
       const fallbackServer = app.listen(0, '0.0.0.0', () => {
         const p = fallbackServer.address().port;

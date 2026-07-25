@@ -89,7 +89,7 @@ function showBanner() {
   console.log(chalk.cyan.bold('  ║') + chalk.yellow.bold('           by SK MIRAJUL ISLAM         ') + chalk.cyan.bold('    ║'));
   console.log(chalk.cyan.bold('  ║                                           ║'));
   console.log(chalk.cyan.bold('  ║') + chalk.dim('   Secure P2P Remote Access via SSH +  ') + chalk.cyan.bold('    ║'));
-  console.log(chalk.cyan.bold('  ║') + chalk.dim('   Cloudflare Tunnels  |  AES-256-CBC ') + chalk.cyan.bold('    ║'));
+  console.log(chalk.cyan.bold('  ║') + chalk.dim('   Cloudflare Tunnels  |  AES-256-GCM ') + chalk.cyan.bold('    ║'));
   console.log(chalk.cyan.bold('  ║                                           ║'));
   console.log(chalk.cyan.bold('  ╚═══════════════════════════════════════════╝'));
   console.log('');
