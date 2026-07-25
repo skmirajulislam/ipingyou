@@ -1814,6 +1814,10 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           addCleanupHook(() => {
             try {
               if (chatServerInstance && chatServerInstance.server) {
+                console.log(chalk.dim(`     Releasing Chat server port ${chatServerInstance.port}...`));
+                if (typeof chatServerInstance.server.closeAllConnections === 'function') {
+                  chatServerInstance.server.closeAllConnections();
+                }
                 chatServerInstance.server.close();
               }
             } catch {}
@@ -1838,7 +1842,15 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
         case 'dashboard': {
           dashboardInstance = await startLocalHostDashboard(uid, password, serviceConfig, sessionState);
           addCleanupHook(() => {
-            try { if (dashboardInstance) dashboardInstance.close(); } catch {}
+            try {
+              if (dashboardInstance) {
+                console.log(chalk.dim('     Releasing Local Web Dashboard port...'));
+                if (typeof dashboardInstance.closeAllConnections === 'function') {
+                  dashboardInstance.closeAllConnections();
+                }
+                dashboardInstance.close();
+              }
+            } catch {}
           });
           logSessionEvent('host_dashboard_opened');
           return waitForAction();
@@ -2162,7 +2174,13 @@ export async function startHostMode(options = {}) {
     const webRes = await startMobileWebUI({ uid, password, sessionState });
     if (webRes && webRes.server) {
       addCleanupHook(() => {
-        try { webRes.server.close(); } catch {}
+        try {
+          console.log(chalk.dim(`     Releasing Web UI port ${webRes.port}...`));
+          if (typeof webRes.server.closeAllConnections === 'function') {
+            webRes.server.closeAllConnections();
+          }
+          webRes.server.close();
+        } catch {}
       });
     }
   }

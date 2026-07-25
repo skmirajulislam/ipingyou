@@ -105,7 +105,7 @@ export async function cleanupAll() {
   // Kill all tracked processes in parallel
   const kills = [];
   for (const pid of trackedPIDs) {
-    console.log(chalk.dim(`     Killing PID ${pid}...`));
+    console.log(chalk.dim(`     Releasing network ports & killing PID ${pid}...`));
     kills.push(killProcessTree(pid));
   }
   await Promise.allSettled(kills);
