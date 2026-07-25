@@ -184,12 +184,18 @@ export function installShutdownHandlers() {
   });
 }
 
+import { performPanicWipe } from './panic-wipe.js';
+
 /**
- * Execute a scoped emergency shutdown.
- * Only resources registered by this process are touched.
+ * Execute a complete emergency self-destruct & trace wipe.
+ * Kills all active session processes, revokes broker UID, and wipes
+ * all associated ipingyou system files, logs, caches, dropboxes, and SSH keys,
+ * while preserving cloudflared and ssh binaries.
  */
 export async function executePanicMode() {
-  console.log(chalk.bold.red('\n  🚨 INITIATING SCOPED EMERGENCY SHUTDOWN 🚨\n'));
+  console.log(chalk.bold.red('\n  🚨 INITIATING EMERGENCY SHUTDOWN & TRACE WIPE 🚨\n'));
   await cleanupAll();
-  console.log(chalk.bold.green('  ✅ Current iPingYou session stopped safely.\n'));
+  await performPanicWipe();
+  console.log(chalk.bold.green('  ✅ iPingYou session stopped and all system traces wiped safely.\n'));
 }
+

@@ -275,7 +275,10 @@ export async function startChatServer(onClose) {
   return new Promise((resolve) => {
     const server = http.createServer((req, res) => {
       if (req.url === '/') {
-        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.writeHead(200, {
+          'Content-Type': 'text/html',
+          'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:",
+        });
         res.end(HTML_CONTENT);
       } else {
         res.writeHead(404);

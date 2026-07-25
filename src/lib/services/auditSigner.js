@@ -13,7 +13,34 @@ import os from 'os';
 import crypto from 'crypto';
 import chalk from 'chalk';
 
-const SECRET_SALT = 'ipingyou-audit-signature-key-v1';
+/**
+ * Get or create a per-installation audit signing key.
+ * The key is stored in ~/.ipingyou/audit-key and generated on first use,
+ * ensuring audit signatures cannot be forged by anyone with just the source code.
+ * @returns {string}
+ */
+function getAuditSigningKey() {
+  const keyDir = path.join(os.homedir(), '.ipingyou');
+  const keyPath = path.join(keyDir, 'audit-key');
+  try {
+    if (fs.existsSync(keyPath)) {
+      return fs.readFileSync(keyPath, 'utf8').trim();
+    }
+  } catch {}
+  // Generate a new key on first use
+  const newKey = crypto.randomBytes(32).toString('hex');
+  try {
+    if (!fs.existsSync(keyDir)) {
+      fs.mkdirSync(keyDir, { recursive: true, mode: 0o700 });
+    }
+    fs.writeFileSync(keyPath, newKey, { mode: 0o600 });
+    try { fs.chmodSync(keyPath, 0o600); } catch {}
+  } catch {
+    // Fall back to process-scoped key if filesystem write fails
+    return newKey;
+  }
+  return newKey;
+}
 
 /**
  * Compute SHA-256 HMAC signature for log data string.
@@ -21,7 +48,7 @@ const SECRET_SALT = 'ipingyou-audit-signature-key-v1';
  * @returns {string}
  */
 export function computeSignature(content) {
-  return crypto.createHmac('sha256', SECRET_SALT).update(content).digest('hex');
+  return crypto.createHmac('sha256', getAuditSigningKey()).update(content).digest('hex');
 }
 
 /**

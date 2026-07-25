@@ -20,8 +20,8 @@ export async function notifyDesktop(title, message) {
   try { process.stdout.write('\u0007'); } catch {}
 
   const platform = process.platform;
-  const cleanTitle = String(title || 'iPingYou').replace(/["'\\]/g, '');
-  const cleanMsg = String(message || '').replace(/["'\\]/g, '');
+  const cleanTitle = String(title || 'iPingYou').replace(/["'\\`$]/g, '');
+  const cleanMsg = String(message || '').replace(/["'\\`$]/g, '');
 
   try {
     if (platform === 'darwin') {

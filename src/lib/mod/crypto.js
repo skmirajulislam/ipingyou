@@ -79,6 +79,11 @@ export function decrypt(ivHex, cipherBase64, password, saltHex) {
   }
 
   // Backward compatibility for live sessions issued by versions before GCM.
+  // DEPRECATED: CBC fallback will be removed in a future release.
+  if (!decrypt._cbcWarned) {
+    console.warn('[DEPRECATION] AES-256-CBC decryption used — this legacy mode will be removed in a future version.');
+    decrypt._cbcWarned = true;
+  }
   const decipher = crypto.createDecipheriv('aes-256-cbc', key, iv);
   let dec = decipher.update(cipherBase64, 'base64', 'utf8');
   dec += decipher.final('utf8');

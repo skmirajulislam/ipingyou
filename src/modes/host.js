@@ -768,7 +768,7 @@ async function startManagedSshd(username, clientPubKey, clientKeyPath) {
     `PidFile ${pidPath}`,
     `AuthorizedKeysFile ${authKeysPath}`,
     `AllowUsers ${username}`,
-    'PermitRootLogin yes',
+    'PermitRootLogin no',
     'PubkeyAuthentication yes',
     'PasswordAuthentication no',
     'KbdInteractiveAuthentication no',

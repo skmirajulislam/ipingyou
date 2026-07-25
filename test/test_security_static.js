@@ -65,6 +65,8 @@ for (const forbiddenInstallerPattern of [
     `Unverified native installer behavior returned: ${forbiddenInstallerPattern}`
   );
 }
+const panicWipeSource = fs.readFileSync(new URL('../src/lib/mod/panic-wipe.js', import.meta.url), 'utf8');
+
 for (const forbiddenCleanupPattern of [
   'rmSync(',
   'unlinkSync(',
@@ -74,9 +76,18 @@ for (const forbiddenCleanupPattern of [
 ]) {
   assert(
     !cleanupSource.includes(forbiddenCleanupPattern),
-    `Unscoped destructive cleanup returned: ${forbiddenCleanupPattern}`
+    `Unscoped destructive cleanup returned in cleanup.js: ${forbiddenCleanupPattern}`
   );
 }
+
+assert(
+  panicWipeSource.includes('performPanicWipe') &&
+  panicWipeSource.includes('PRESERVED_BINARIES') &&
+  panicWipeSource.includes('cloudflared') &&
+  panicWipeSource.includes('authorized_keys'),
+  'Panic wipe module must safely sanitize authorized_keys and preserve cloudflared/ssh binaries'
+);
+
 assert(
   cliSource.includes('STOP CURRENT SESSION'),
   'Emergency cleanup must require local typed confirmation'

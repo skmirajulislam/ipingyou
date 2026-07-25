@@ -355,7 +355,7 @@ program
 
 program
   .command('panic')
-  .description('🚨 Stop resources owned by the current iPingYou session')
+  .description('🚨 Stop resources and wipe all ipingyou files, logs, caches & keys (preserves cloudflared & ssh)')
   .action(async () => {
     try {
       showBanner();

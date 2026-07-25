@@ -142,7 +142,7 @@ export async function startMobileWebUI({ uid, password, port = 8080, sessionStat
   });
 
   return new Promise((resolve) => {
-    const server = app.listen(port, '0.0.0.0', () => {
+    const server = app.listen(port, '127.0.0.1', () => {
       const actualPort = server.address().port;
       const url = `http://localhost:${actualPort}/?token=${encodeURIComponent(accessToken)}`;
       if (sessionState) sessionState.webUrl = url;
@@ -150,7 +150,7 @@ export async function startMobileWebUI({ uid, password, port = 8080, sessionStat
       console.log(chalk.bold.cyan(`  📱 Mobile Web UI active on ${url}`));
       resolve({ server, url, port: actualPort });
     }).on('error', () => {
-      const fallbackServer = app.listen(0, '0.0.0.0', () => {
+      const fallbackServer = app.listen(0, '127.0.0.1', () => {
         const p = fallbackServer.address().port;
         const url = `http://localhost:${p}/?token=${encodeURIComponent(accessToken)}`;
         if (sessionState) sessionState.webUrl = url;

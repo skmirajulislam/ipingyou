@@ -6,7 +6,7 @@
  * ============================================================
  */
 
-import { exec } from 'child_process';
+import { execa } from 'execa';
 import chalk from 'chalk';
 
 /**
@@ -17,34 +17,40 @@ import chalk from 'chalk';
 export async function copyToClipboard(text) {
   if (!text) return false;
 
-  return new Promise((resolve) => {
+  try {
     let command = '';
+    let args = [];
 
     if (process.platform === 'darwin') {
       command = 'pbcopy';
     } else if (process.platform === 'win32') {
       command = 'clip';
     } else {
-      // Linux / BSD
-      command = 'xclip -selection clipboard || xsel -b';
+      // Linux / BSD — try xclip first
+      command = 'xclip';
+      args = ['-selection', 'clipboard'];
     }
 
-    try {
-      const proc = exec(command, (err) => {
-        if (err) resolve(false);
-        else resolve(true);
-      });
-
-      if (proc.stdin) {
-        proc.stdin.write(text);
-        proc.stdin.end();
-      } else {
-        resolve(false);
-      }
-    } catch {
-      resolve(false);
+    await execa(command, args, {
+      input: text,
+      reject: true,
+      timeout: 3000,
+    });
+    return true;
+  } catch {
+    // Fallback for Linux: try xsel if xclip failed
+    if (process.platform !== 'darwin' && process.platform !== 'win32') {
+      try {
+        await execa('xsel', ['-b'], {
+          input: text,
+          reject: true,
+          timeout: 3000,
+        });
+        return true;
+      } catch {}
     }
-  });
+    return false;
+  }
 }
 
 /**
