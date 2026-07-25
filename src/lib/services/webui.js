@@ -13,6 +13,20 @@ import crypto from 'node:crypto';
 import chalk from 'chalk';
 import { openUrl } from '../mod/open-url.js';
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>'"]/g, character => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    "'": '&#39;',
+    '"': '&quot;',
+  })[character]);
+}
+
+function safeScriptString(value) {
+  return JSON.stringify(String(value ?? '')).replace(/</g, '\\u003c');
+}
+
 /**
  * Start embedded Web UI server.
  * @param {object} options 
@@ -21,6 +35,9 @@ import { openUrl } from '../mod/open-url.js';
 export async function startMobileWebUI({ uid, password, port = 8080, sessionState = {} }) {
   const app = express();
   const accessToken = crypto.randomBytes(32).toString('base64url');
+  const safeUid = escapeHtml(uid);
+  const safePassword = escapeHtml(password);
+  const uidForScript = safeScriptString(uid);
   app.disable('x-powered-by');
   app.use(express.json({ limit: '10kb' }));
   app.use((req, res, next) => {
@@ -103,14 +120,19 @@ export async function startMobileWebUI({ uid, password, port = 8080, sessionStat
     <div style="text-align: center;"><span class="badge">● HOST SESSION ACTIVE</span></div>
     
     <div class="info-group">
-      <div><span class="info-label">Session UID:</span> <strong>${uid}</strong></div>
-      <div><span class="info-label">Encryption Key:</span> <code>${password}</code></div>
+      <div><span class="info-label">Session UID:</span> <strong>${safeUid}</strong></div>
+      <div><span class="info-label">Encryption Key:</span> <code>${safePassword}</code></div>
       <div><span class="info-label">Status:</span> Secure Tunnel Active</div>
     </div>
 
-    <button class="btn" onclick="alert('Connect via SSH command: npx ipingyou connect --uid ${uid}')">📋 Copy Connection Info</button>
+    <button class="btn" id="connection-info">📋 View Connection Info</button>
   </div>
 </body>
+<script>
+  document.getElementById('connection-info').addEventListener('click', () => {
+    alert('Connect via SSH command: npx ipingyou connect --uid ' + ${uidForScript});
+  });
+</script>
 </html>
     `);
   });

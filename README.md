@@ -1,146 +1,129 @@
-<div align="center">
-  <h1>🔗 iPingYou — SecureLink CLI v2.0</h1>
-  <p><strong>Military-Grade, Zero-Knowledge P2P Remote Access & Collaboration Tool</strong></p>
+# iPingYou
 
-  [![npm version](https://img.shields.io/npm/v/@miraj181/ipingyou.svg?style=flat-square)](https://www.npmjs.com/package/@miraj181/ipingyou)
-  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://opensource.org/licenses/MIT)
-  [![Node.js Version](https://img.shields.io/node/v/@miraj181/ipingyou.svg?style=flat-square)](https://nodejs.org)
-</div>
+SecureLink CLI for temporary remote access through SSH and Cloudflare Quick Tunnels. A host encrypts the session configuration locally, stores only the encrypted record with a broker, and shares a UID and session secret with the intended client.
 
----
+> iPingYou is a remote-access tool. Give the UID, session secret, and mobile-dashboard link only to people you trust. A tunnel exposes the service selected by the host.
 
-**iPingYou** is a zero-configuration Node.js CLI that establishes AES-encrypted, peer-to-peer SSH tunnels using Cloudflare's Edge network. Version 2.0 introduces **End-to-End Encrypted WebSockets**, **Terminal Mirroring**, **Passwordless Ephemeral Keys**, and **Background Daemonization**.
+## What it does
 
-No firewalls to configure. No port forwarding. No plaintext leakage.
+- Host SSH, a one-time SCP download, a local HTTP service, or a custom TCP service.
+- Create a Cloudflare Quick Tunnel without router port forwarding.
+- Encrypt broker session records with AES-256-GCM and PBKDF2-SHA-256. Existing short-lived legacy CBC records can still be read during upgrades.
+- Use a random 192-bit default session secret; hosts can supply their own secret instead.
+- Optionally require host approval before a client receives the tunnel configuration.
+- Create an ephemeral SSH key for passwordless client access and remove it during cleanup.
+- Transfer files with SCP, browse local/remote paths, calculate checksums, and use an optional shared drop folder.
+- Start a password-encrypted Web Crypto chat room, reverse SSH forwards, a local host dashboard, and a token-protected mobile status page.
+- Record scoped session events, review history, export signed audit logs, and run diagnostics.
 
-## ✨ God-Tier Features (New in v2.0)
+## Requirements
 
-* 🔐 **Ephemeral Passwordless Auth**: The Host automatically injects a temporary `Ed25519` key into `authorized_keys`. Clients connect instantly without knowing the machine's actual root/user password. Keys are purged immediately on exit.
-* 💬 **E2E Web Crypto Chat Room**: A real-time, browser-based chat UI using native Web Crypto API (`AES-GCM`). Your chat keys are passed via URL fragments (`#password`) so they never touch a server—not even the Host machine's Node server!
-* 📊 **Live Client Activity Logs**: Stream and inspect connected clients' activity logs in real-time right from the Host control console to audit actions and verify transfers.
-* 🔄 **Reverse Port Forwarding (`ssh -R`)**: Clients can expose their *local* `localhost` development ports back to the Host through the secure tunnel.
-* 📡 **Hardware Telemetry Verification**: Clients silently generate hardware footprint reports (OS, RAM, CPU, IP), encrypt them locally with the session password, and send them to the Host for authorization.
-* 🚨 **Scoped Emergency Stop**: Type `ipingyou panic` and confirm locally to stop only processes and temporary credentials owned by the current iPingYou session.
-* 👻 **Daemonization**: Run `ipingyou service install` to quietly install and run the Host listener in the background (survives system reboots using PM2).
-* 🧭 **Approval Gate**: Require the Host to explicitly approve clients before they receive tunnel/key material.
-* 📦 **One-Time File Share**: Serve a single file/folder over SCP and revoke after use.
-* 🌐 **HTTP & TCP Exposure**: Share a local web app or any TCP service (DB/RDP/VNC) beyond SSH.
-* 📂 **Shared Drop Folder**: Auto-prepared dropbox folder for safe file transfers (macOS friendly), removed on exit.
-* 🧾 **Live Session Logs**: Host/client/broker write ephemeral per-session logs with actions and request/response status, removed on exit.
+- Node.js **22.12.0 or newer**.
+- `ssh` and `cloudflared` available on the host and client as appropriate.
+- An SSH server running on the host for SSH/SCP modes.
+- A reachable broker. The default public broker is offered interactively; hosts can also start a private local broker and tunnel it.
 
----
+The runtime dependencies are `chalk`, `commander`, `express`, `express-rate-limit`, `execa`, `helmet`, `inquirer`, `ora`, `qrcode-terminal`, and `ws`. No removed or unrelated packages are required.
 
-## 🚀 Quick Start
+## Install and run
 
-You don't need to download any code. `iPingYou` runs natively from the global npm registry.
-
-### The "On-the-Fly" Way (Recommended)
 ```bash
-# Start the interactive wizard
-npx @miraj181/ipingyou
+# Run the published CLI without a global installation
+npx @miraj181/ipingyou@latest
 
-# Instantly spin up your machine as a Host
-npx @miraj181/ipingyou host
-
-# Connect to a remote machine using a session UID
-npx @miraj181/ipingyou connect
+# Start a host or client directly
+npx @miraj181/ipingyou@latest host
+npx @miraj181/ipingyou@latest connect
 ```
 
-### Global Install
+Global installation is optional:
+
 ```bash
-# Install Socket Firewall once, then scan iPingYou before installation
-npm install -g sfw
-sfw npm install -g @miraj181/ipingyou
-
-# Execute globally using aliases:
-ipingyou
-# or
-securelink
-
-# Verify future in-app npm installs are firewall-protected
-ipingyou security-status
+npm install -g @miraj181/ipingyou
+ipingyou --help
+# `securelink` is an equivalent alias.
 ```
 
----
+If a machine already has an older global `ipingyou` executable, it can shadow the `npx` binary. Remove or update that old global installation before relying on the shorthand command.
 
-## 🔒 Zero-Knowledge Architecture
+## Typical SSH session
 
-The public broker server exists solely to rendezvous connections and approvals. It is fundamentally a **"Dumb Pipe"**.
+1. Run `ipingyou host`.
+2. Enter a session secret, or leave it blank to generate a high-entropy secret.
+3. Select SSH and optionally enable host approval.
+4. Share the displayed UID and secret through a secure channel.
+5. The client runs:
 
-### Session Bootstrap & Data Path
+   ```bash
+   npx @miraj181/ipingyou@latest connect --uid <uid> --password <secret>
+   ```
 
-```mermaid
-graph LR
-    H[Host CLI] -->|AES-256-CBC Encrypted Session Payload| B((Broker Relay))
-    H -->|Host Auth Token for approvals and telemetry| B
-    B -->|Encrypted Session Payload| C[Client CLI]
-    C -->|Locally Decrypts Password| C
-    C -->|Direct Cloudflare SSH/TCP| H
-    C -->|E2E AES-GCM WebSockets| H
-```
+6. End the host session with its dashboard controls or `Ctrl+C`. Scoped cleanup revokes the broker record, stops iPingYou-owned processes, and removes temporary session artifacts.
 
-1. **Host** starts up, spawns `cloudflared` tunnels for SSH/HTTP/TCP and Chat, then generates a random **AES-256 Session Password** plus a **host-only auth token**.
-2. **Host** encrypts the session payload with the password and registers the ciphertext (plus the host token) with the Broker under a short UID.
-3. **Client** runs `ipingyou connect`, enters the UID and Password.
-4. **Client** fetches the ciphertext, decrypts it locally, and connects directly via SSH or WebSockets.
-5. On `Ctrl+C`, `tree-kill` initiates a graceful shutdown, revokes the UID from the broker, and removes session artifacts.
+## Security model
 
-### Approval Gate Flow (Optional)
+The broker is a rendezvous service, not a trusted decryptor:
 
 ```mermaid
 sequenceDiagram
-    participant C as Client CLI
-    participant B as Broker Relay
-    participant H as Host CLI
-    C->>B: approval-request encrypted metadata
-    H->>B: fetch approvals with x-host-token
-    H->>B: approve/deny with x-host-token
-    C->>B: poll approval status
-    B-->>C: approved/denied
+  participant H as Host CLI
+  participant B as Broker
+  participant C as Client CLI
+  H->>H: Encrypt session record (AES-256-GCM)
+  H->>B: Register UID + encrypted record
+  C->>B: Resolve UID or request approval
+  B-->>C: Encrypted record only
+  C->>C: Decrypt locally with shared secret
+  C->>H: Connect through Cloudflare tunnel
 ```
 
-1. **Client** submits encrypted approval metadata (username, host, intent) to the Broker.
-2. **Host** lists and decides approvals using its host-only auth token; the Broker never shares this token with clients.
-3. **Client** polls for approval status and proceeds only when approved.
+- Broker records have a one-hour TTL, request limits, payload limits, and host-token protected controls.
+- Re-registering an active UID requires its original host token; it cannot be anonymously replaced.
+- Approval decisions bind to the broker-normalized client address. IP address checks are a safeguard, not user identity verification.
+- The chat’s message contents are encrypted in the browser with AES-GCM. The host-close action requires a separate random host capability.
+- The mobile page requires a random URL capability. It is served over the local network, so treat its full URL as sensitive and do not use it on untrusted networks.
+- SSH host-key persistence is enabled by default. Do not disable host-key verification unless you understand the risk.
 
----
+Encryption protects the session payload, not the endpoint you intentionally expose. A client with the session secret and a permitted SSH key can access the service for the lifetime of the session.
 
-## 🛡️ Security Scanner Disclaimer
+## Commands
 
-Because **iPingYou** is a remote-access tool with background daemonization and SSH process management, automated security scanners may classify it as security-sensitive. Native dependencies are never downloaded or installed automatically, and emergency cleanup is limited to resources registered by the current process.
+| Command | Purpose |
+| --- | --- |
+| `ipingyou` | Interactive mode selector. |
+| `ipingyou host` | Start a host session. Options: `--qr`, `--read-only`, `--record`, `--enable-web`, `--deny <patterns>`. |
+| `ipingyou connect` | Resolve a UID and connect. Options: `--uid`, `--password`, `--limit`. |
+| `ipingyou ai` | Start the optional Groq-powered assistant with command/path safeguards. Requires `GROQ_API_KEY`. |
+| `ipingyou doctor` | Run non-invasive checks for dependencies, SSH, broker, SCP, AI, and tests. |
+| `ipingyou panic` | Require a local typed confirmation, then stop resources owned by the current session. |
+| `ipingyou service install\|stop\|status` | Manage the optional PM2 host service. |
+| `ipingyou security-status` | Report Socket Firewall availability for npm installation workflows. |
+| `ipingyou allowlist [list\|add\|remove] [pattern]` | Manage the local AI command allowlist. |
+| `ipingyou history` | View session events, generate an AI summary, or export/verify signed audit logs. |
 
-These alerts (e.g., "AI-detected potential code anomaly", "Shell access", "Network access") are **expected behavior** for a peer-to-peer tunneling utility. The source code is entirely open-source, heavily documented, and uses zero-knowledge encryption to ensure your data is safe.
+Run `ipingyou <command> --help` for current options.
 
----
+## Resource behaviour
 
-| Tool | Required | Installation Guide |
-|------|----------|--------------------|
-| **Node.js ≥18** | ✅ | [nodejs.org](https://nodejs.org) |
-| **`ssh`** | ✅ | Ships native on macOS/Linux. Windows: `winget install Microsoft.OpenSSH.Client` |
-| **`cloudflared`** | ✅ | `brew install cloudflared` or [Download Here](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) |
+iPingYou is designed for bounded, short-lived sessions:
 
-*(Note: The CLI auto-detects your OS and will attempt to guide you on how to install any missing dependencies!)*
+- Broker session payloads are limited in size and count, expire automatically, and are pruned every five minutes.
+- Broker telemetry and approval records are capped per UID.
+- Session logs are capped at 2 MiB; retained history rotates at 5 MiB.
+- Crypto/checksum work uses one unreferenced worker with a 128-task queue and a 128 MiB old-generation cap; it is terminated after 30 seconds idle.
+- Tunnel restart uses a two-second backoff. Dashboard event polling backs off from 5 to 20 seconds when unchanged.
+- Chat messages are limited to 64 KiB, and its local server is closed during session cleanup.
 
----
+Long-running SSH, SCP, Cloudflare, and PM2 processes naturally consume resources while active. Stop a session when it is no longer needed.
 
-## 📖 CLI Command Reference
+## Development
 
-| Command | Description |
-|---------|-------------|
-| `ipingyou` | Interactive CLI dashboard wizard. |
-| `ipingyou host` | Start hosting and exposing your local machine securely. |
-| `ipingyou connect -u <UID>` | Connect directly to a specific UID. |
-| `ipingyou ai` | Groq-powered task assistant with guarded local/remote tools. |
-| `ipingyou doctor` | Diagnostics for dependencies, SSH, broker, SCP, AI, and tests. |
-| `ipingyou panic` | 🚨 Confirmed emergency stop for the current iPingYou session only. |
-| `ipingyou service install` | 👻 Installs Host mode as an always-on background daemon. |
-| `ipingyou service stop` | Stops and removes the background daemon. |
-| `ipingyou service status` | Shows background daemon status. |
-| `ipingyou allowlist` | Manage the AI command allowlist (list/add/remove). |
-| `ipingyou history` | View session event logs from `~/.ipingyou/logs`. |
+```bash
+npm test
+```
 
----
+The test suite covers helper safety, security regressions, authenticated encryption/tamper rejection, and a self-starting broker integration test.
 
-## 📜 License
+## License
 
-[MIT License](LICENSE) © Sk Mirajul Islam
+[MIT](LICENSE) © Sk Mirajul Islam
