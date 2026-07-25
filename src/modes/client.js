@@ -125,6 +125,9 @@ function normalizePrivateKey(privateKey) {
 async function writeEphemeralPrivateKey(privateKey) {
   const keyPath = path.join(os.tmpdir(), `ipingyou_client_${Date.now()}`);
   fs.writeFileSync(keyPath, normalizePrivateKey(privateKey), { mode: 0o600 });
+  addCleanupHook(() => {
+    try { fs.unlinkSync(keyPath); } catch {}
+  });
 
   // On Windows, NTFS ignores POSIX mode bits — fix ACLs with icacls
   if (process.platform === 'win32') {

@@ -72,58 +72,24 @@ export function killProcessTree(pid, signal = 'SIGTERM') {
   return killProcessTreeSafely(pid, signal);
 }
 
-async function killProcessTreeSafely(pid, signal) {
+async function killProcessTreeSafely(pid, signal = 'SIGKILL') {
   const rootPid = Number.parseInt(pid, 10);
   if (!Number.isSafeInteger(rootPid) || rootPid <= 0 || rootPid === process.pid) {
-    throw new Error('Invalid child process PID');
+    return;
   }
 
   if (process.platform === 'win32') {
     await execa('taskkill', ['/PID', String(rootPid), '/T', '/F'], {
       reject: false,
-      timeout: 5000,
+      timeout: 1000,
       maxBuffer: 64 * 1024,
-    });
+    }).catch(() => {});
     return;
   }
 
-  const descendants = [];
-  const visited = new Set([rootPid]);
-  const pending = [rootPid];
-  while (pending.length > 0 && visited.size <= 1024) {
-    const parentPid = pending.pop();
-    const result = await execa('pgrep', ['-P', String(parentPid)], {
-      reject: false,
-      timeout: 2000,
-      maxBuffer: 64 * 1024,
-    }).catch(() => ({ stdout: '' }));
-    for (const value of String(result.stdout || '').split(/\s+/)) {
-      const childPid = Number.parseInt(value, 10);
-      if (!Number.isSafeInteger(childPid) || childPid <= 0 || visited.has(childPid)) continue;
-      visited.add(childPid);
-      descendants.push(childPid);
-      pending.push(childPid);
-    }
-  }
-
-  const targets = [...descendants.reverse(), rootPid];
-  for (const targetPid of targets) {
-    try {
-      process.kill(targetPid, signal);
-    } catch (err) {
-      if (err.code !== 'ESRCH') throw err;
-    }
-  }
-
-  await new Promise(resolve => setTimeout(resolve, 300));
-  for (const targetPid of targets) {
-    try {
-      process.kill(targetPid, 0);
-      process.kill(targetPid, 'SIGKILL');
-    } catch (err) {
-      if (err.code !== 'ESRCH') throw err;
-    }
-  }
+  // Instant POSIX process group termination
+  try { process.kill(-rootPid, 'SIGKILL'); } catch {}
+  try { process.kill(rootPid, 'SIGKILL'); } catch {}
 }
 
 /**
@@ -136,7 +102,7 @@ export async function cleanupAll() {
   console.log('');
   console.log(chalk.yellow('  🧹 Cleaning up...'));
 
-  // Kill all tracked processes
+  // Kill all tracked processes in parallel
   const kills = [];
   for (const pid of trackedPIDs) {
     console.log(chalk.dim(`     Killing PID ${pid}...`));
@@ -149,23 +115,27 @@ export async function cleanupAll() {
   for (const hook of _cleanupHooks) {
     try {
       await hook();
-    } catch (err) {
-      console.error(chalk.red(`     Cleanup hook failed: ${err.message}`));
-    }
+    } catch {}
   }
 
-  // Revoke UID from broker
+  // Revoke UID from broker with strict 400ms network timeout
   if (_revokeUID && _brokerUrl) {
     try {
       const headers = {};
       const token = _getHostToken ? _getHostToken() : null;
       if (token) headers['x-host-token'] = token;
       
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 400);
+
       const res = await fetch(`${_brokerUrl}/revoke/${_revokeUID}`, { 
         method: 'DELETE',
-        headers 
-      });
-      if (res.ok) {
+        headers,
+        signal: controller.signal
+      }).catch(() => null);
+      clearTimeout(timeout);
+
+      if (res && res.ok) {
         console.log(chalk.dim(`     Revoked UID ${_revokeUID} from broker`));
       }
     } catch {

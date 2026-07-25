@@ -10,13 +10,14 @@
 import express from 'express';
 import http from 'http';
 import chalk from 'chalk';
+import { openUrl } from '../mod/open-url.js';
 
 /**
  * Start embedded Web UI server.
  * @param {object} options 
  * @returns {Promise<{ server: http.Server, url: string, port: number }>}
  */
-export async function startMobileWebUI({ uid, password, port = 8080, sessionState }) {
+export async function startMobileWebUI({ uid, password, port = 8080, sessionState = {} }) {
   const app = express();
   app.use(express.json());
 
@@ -109,13 +110,16 @@ export async function startMobileWebUI({ uid, password, port = 8080, sessionStat
   return new Promise((resolve) => {
     const server = app.listen(port, () => {
       const url = `http://localhost:${port}`;
+      if (sessionState) sessionState.webUrl = url;
+      openUrl(url).catch(() => {});
       console.log(chalk.bold.cyan(`  📱 Mobile Web UI active on ${url}`));
       resolve({ server, url, port });
     }).on('error', () => {
-      // Fallback to random available port if 8080 is busy
       const fallbackServer = app.listen(0, () => {
         const p = fallbackServer.address().port;
         const url = `http://localhost:${p}`;
+        if (sessionState) sessionState.webUrl = url;
+        openUrl(url).catch(() => {});
         console.log(chalk.bold.cyan(`  📱 Mobile Web UI active on ${url}`));
         resolve({ server: fallbackServer, url, port: p });
       });

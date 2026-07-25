@@ -1548,6 +1548,9 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
     if (serviceConfig.chatUrl) {
       console.log(`  ║  ${chalk.cyan('Chat URL:')}   ${chalk.dim(serviceConfig.chatUrl.substring(0, 40))}  ║`);
     }
+    if (sessionState.webUrl) {
+      console.log(`  ║  ${chalk.cyan('Web UI:')}     ${chalk.green(sessionState.webUrl.substring(0, 39).padEnd(39))}║`);
+    }
     if (serviceConfig.sharedDropPath) {
       console.log(`  ║  ${chalk.cyan('Drop Box:')}   ${chalk.dim(serviceConfig.sharedDropPath.substring(0, 40))}  ║`);
     }
@@ -1591,6 +1594,10 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
         { name: '🔄 Re-register with broker', value: 'reregister' }
       ];
 
+      if (sessionState.webUrl) {
+        choices.splice(2, 0, { name: `📱 Open Mobile Web UI (${sessionState.webUrl})`, value: 'open_webui' });
+      }
+
       if (!chatServerInstance) {
         choices.push({ name: '💬 Start Real-time Chat Room', value: 'chat' });
       } else {
@@ -1621,6 +1628,15 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
       switch (action) {
         case 'qr': {
           await generateTerminalQR(uid, password, BROKER_URL);
+          return waitForAction();
+        }
+
+        case 'open_webui': {
+          if (sessionState.webUrl) {
+            const { openUrl } = await import('../lib/mod/open-url.js');
+            openUrl(sessionState.webUrl).catch(() => {});
+            console.log(chalk.green(`  📱 Opening Mobile Web UI: ${sessionState.webUrl}`));
+          }
           return waitForAction();
         }
 
@@ -2143,7 +2159,12 @@ export async function startHostMode(options = {}) {
     console.log(chalk.yellow(`  🛡️  Command Guardrails active: ${options.deny}`));
   }
   if (options.enableWeb) {
-    await startMobileWebUI({ uid, password, sessionState });
+    const webRes = await startMobileWebUI({ uid, password, sessionState });
+    if (webRes && webRes.server) {
+      addCleanupHook(() => {
+        try { webRes.server.close(); } catch {}
+      });
+    }
   }
 
   const connectCmd = `npx @miraj181/ipingyou@latest connect --uid ${uid} --password ${password}`;
