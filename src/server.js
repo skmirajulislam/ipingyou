@@ -484,12 +484,6 @@ app.get('/resolve/:uid', generalLimiter, (req, res) => {
         return res.status(423).json({ error: 'Host approval required before resolving this session' });
       }
       
-      // Client-specific E2E gating: verify client IP matches approved request IP
-      const clientIp = getClientIp(req);
-      if (approved.ip && approved.ip !== clientIp) {
-        return res.status(403).json({ error: 'Client IP mismatch — access denied' });
-      }
-
       if (approved.approvedPayload) {
         entry.resolveCount = (entry.resolveCount || 0) + 1;
         console.log(`🔍 [${new Date().toLocaleTimeString()}] Resolved UID (Client Specific): ${uid} (resolve #${entry.resolveCount})`);
@@ -499,7 +493,7 @@ app.get('/resolve/:uid', generalLimiter, (req, res) => {
           ciphertext: approved.approvedPayload.ciphertext,
           salt: approved.approvedPayload.salt,
           isClientSpecific: true,
-          ip: clientIp
+          ip: approved.ip || getClientIp(req)
         });
         
         if (entry.oneTime) {
