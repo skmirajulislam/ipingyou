@@ -194,7 +194,8 @@ function isEncryptedPayload(body) {
 function encryptedPayloadBytes(payload) {
   return Buffer.byteLength(payload?.ciphertext || '')
     + Buffer.byteLength(payload?.iv || '')
-    + Buffer.byteLength(payload?.salt || '');
+    + Buffer.byteLength(payload?.salt || '')
+    + (payload?.approvedPayload ? encryptedPayloadBytes(payload.approvedPayload) : 0);
 }
 
 function entryPayloadBytes(entry) {
@@ -325,14 +326,15 @@ app.post('/extend/:uid', generalLimiter, (req, res) => {
   }
 
   const minutes = parseInt(req.body?.minutes || 15, 10);
-  const addMs = minutes * 60 * 1000;
+  const clampedMinutes = Math.max(-1440, Math.min(1440, minutes));
+  const addMs = clampedMinutes * 60 * 1000;
   
   // Support extend (+) and shrink (-), ensuring at least 60s remaining
   const minCreatedAt = Date.now() - TTL_MS + 60000;
   entry.createdAt = Math.min(Date.now(), Math.max(minCreatedAt, (entry.createdAt || Date.now()) + addMs));
 
-  console.log(`⏱️ Adjusted session ${uid} duration by ${minutes} minutes`);
-  res.json({ success: true, extendedMinutes: minutes, ttlRemainingMs: Math.max(0, TTL_MS - (Date.now() - entry.createdAt)) });
+  console.log(`⏱️ Adjusted session ${uid} duration by ${clampedMinutes} minutes`);
+  res.json({ success: true, extendedMinutes: clampedMinutes, ttlRemainingMs: Math.max(0, TTL_MS - (Date.now() - entry.createdAt)) });
 });
 
 /**
@@ -621,6 +623,7 @@ app.post('/approval-requests/:uid/:requestId/:decision', strictLimiter, (req, re
       ciphertext: req.body.ciphertext,
       salt: req.body.salt
     };
+    bufferedPayloadBytes += encryptedPayloadBytes(request.approvedPayload);
   }
   res.json({ status: request.status });
 });

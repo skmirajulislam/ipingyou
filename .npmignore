@@ -7,12 +7,11 @@ dist/
 # Tests
 test_*.js
 *.test.js
-tests/
+test/
 coverage/
 
 # Deployment / Server
 render.yaml
-src/server.js 
 
 # Other local files
 .npmrc

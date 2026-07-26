@@ -150,8 +150,14 @@ export function classifyCommand(command) {
   // User allowlists may suppress prompts only after non-bypassable safety checks.
   try {
     const userPatterns = getAllowlistRegexes();
-    if (Array.isArray(userPatterns) && userPatterns.some(pattern => pattern.test(text))) {
-      return { blocked: false, needsApproval: false, reason: 'Matched user allowlist' };
+    if (Array.isArray(userPatterns)) {
+      const start = Date.now();
+      for (const pattern of userPatterns) {
+        if (Date.now() - start > 100) throw new Error('Regex timeout');
+        if (pattern.test(text)) {
+          return { blocked: false, needsApproval: false, reason: 'Matched user allowlist' };
+        }
+      }
     }
   } catch {
     // Ignore allowlist errors and fall back to defaults.

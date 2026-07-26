@@ -8,6 +8,7 @@ import inquirer from 'inquirer';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { getAlias } from '../lib/mod/config.js';
 import { validateUID } from '../lib/mod/uid.js';
 import { resolveUID } from '../lib/client/broker.js';
@@ -102,7 +103,7 @@ function normalizePrivateKey(privateKey) {
 }
 
 async function writeEphemeralPrivateKey(privateKey) {
-  const keyPath = path.join(os.tmpdir(), `ipingyou_ai_${Date.now()}`);
+  const keyPath = path.join(os.tmpdir(), `ipingyou_ai_${crypto.randomBytes(8).toString('hex')}`);
   fs.writeFileSync(keyPath, normalizePrivateKey(privateKey), { mode: 0o600 });
 
   const result = await execa('ssh-keygen', ['-y', '-f', keyPath], {
@@ -230,8 +231,12 @@ async function runLocalCommand(command) {
     maxBuffer: 1024 * 1024,
   });
   trackPID(child.pid);
-  const result = await child;
-  untrackPID(child.pid);
+  let result;
+  try {
+    result = await child;
+  } finally {
+    untrackPID(child.pid);
+  }
 
   return {
     exitCode: result.exitCode,
@@ -300,8 +305,12 @@ async function runRemoteCommand(context, command) {
     maxBuffer: 1024 * 1024,
   });
   trackPID(child.pid);
-  const result = await child;
-  untrackPID(child.pid);
+  let result;
+  try {
+    result = await child;
+  } finally {
+    untrackPID(child.pid);
+  }
 
   return {
     exitCode: result.exitCode,
@@ -629,6 +638,14 @@ export async function startAIMode() {
     if (await tryAITransfer(trimmed, context)) continue;
     if (await maybeRunMatchedAppAction(trimmed)) continue;
     await runAgentTurn(apiKey, model, context, messages, trimmed);
+
+    let totalChars = messages.reduce((sum, m) => sum + (m.content ? m.content.length : 0), 0);
+    while (totalChars > 80000 && messages.length > 1) {
+      const idx = messages.findIndex((m, i) => i > 0 && m.role !== 'system');
+      if (idx === -1) break;
+      totalChars -= (messages[idx].content ? messages[idx].content.length : 0);
+      messages.splice(idx, 1);
+    }
   }
 
   await cleanupAll();
@@ -686,8 +703,12 @@ async function tryAITransfer(task, context) {
     try {
       const child = execa('scp', scpArgs, { stdio: 'inherit', reject: false });
       trackPID(child.pid);
-      const result = await child;
-      untrackPID(child.pid);
+      let result;
+      try {
+        result = await child;
+      } finally {
+        untrackPID(child.pid);
+      }
       if (result.exitCode === 0) {
         console.log(chalk.green('  ✅ Transfer completed via active remote session.'));
         recordEvent('ai_transfer_success', { direction, localPath, remotePath, hostname: context.hostname, reusedContext: true });

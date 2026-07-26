@@ -3,7 +3,7 @@ services:
     name: ipingyou-broker
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm ci
     startCommand: node src/server.js
     envVars:
       - key: SECRET_KEY

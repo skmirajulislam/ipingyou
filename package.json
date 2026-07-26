@@ -20,7 +20,7 @@
     "start": "node src/server.js",
     "dev:cli": "node src/cli.js",
     "test": "node test/test_ai_helpers.js && node test/test_security_static.js && node test/test_panic_wipe.js && node test/test_e2e_crypto.js && node test/test_broker_integration.js",
-    "prepublishOnly": "node -e \"require('fs').accessSync('LICENSE')\" && node src/cli.js --help"
+    "prepublishOnly": "node --input-type=module -e \"import fs from 'node:fs'; fs.accessSync('LICENSE')\" && node src/cli.js --help"
   },
   "keywords": [
     "ssh",

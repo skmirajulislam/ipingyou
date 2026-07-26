@@ -34,7 +34,11 @@ function resetWorker(err) {
     reject(err);
   }
   pending.clear();
+  const oldWorker = worker;
   worker = null;
+  if (oldWorker) {
+    oldWorker.terminate().catch(() => {});
+  }
 }
 
 function ensureWorker() {
@@ -103,6 +107,11 @@ export function runWorkerTask(type, payload) {
     clearIdleShutdown();
     pending.set(id, { resolve, reject });
     activeWorker.ref();
-    activeWorker.postMessage({ id, type, payload });
+    try {
+      activeWorker.postMessage({ id, type, payload });
+    } catch (err) {
+      pending.delete(id);
+      reject(err);
+    }
   });
 }

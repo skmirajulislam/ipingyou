@@ -11,6 +11,7 @@ export function getAllowlistRegexes() {
         const data = JSON.parse(raw || '[]');
         if (!Array.isArray(data)) return [];
         return data.map(s => {
+            if (typeof s !== 'string' || s.length > 200) return null;
             try { return new RegExp(s); } catch { return null; }
         }).filter(Boolean);
     } catch {

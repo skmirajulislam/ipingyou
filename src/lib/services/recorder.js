@@ -28,7 +28,7 @@ export class SessionRecorder {
   init() {
     try {
       if (!fs.existsSync(this.recordingDir)) {
-        fs.mkdirSync(this.recordingDir, { recursive: true });
+        fs.mkdirSync(this.recordingDir, { recursive: true, mode: 0o700 });
       }
 
       const header = JSON.stringify({
@@ -40,7 +40,8 @@ export class SessionRecorder {
         env: { TERM: process.env.TERM || 'xterm-256color', SHELL: process.env.SHELL || '/bin/bash' }
       }) + '\n';
 
-      fs.writeFileSync(this.filePath, header, 'utf8');
+      this.stream = fs.createWriteStream(this.filePath, { encoding: 'utf8' });
+      this.stream.write(header);
       this.isRecording = true;
       console.log(chalk.dim(`  📹 Session recording active: ${this.filePath}`));
     } catch (err) {
@@ -59,7 +60,7 @@ export class SessionRecorder {
       const timeOffset = (Date.now() - this.startTime) / 1000;
       const text = typeof data === 'string' ? data : data.toString('utf8');
       const entry = JSON.stringify([timeOffset, 'o', text]) + '\n';
-      fs.appendFileSync(this.filePath, entry, 'utf8');
+      this.stream.write(entry);
     } catch {
       // Ignore write errors to prevent session interruption
     }
@@ -68,6 +69,9 @@ export class SessionRecorder {
   stop() {
     if (this.isRecording) {
       this.isRecording = false;
+      if (this.stream) {
+        this.stream.end();
+      }
       console.log(chalk.green(`  ✅ Recording saved: ${this.filePath}`));
     }
   }

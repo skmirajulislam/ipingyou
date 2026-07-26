@@ -56,7 +56,7 @@ export async function spawnTunnelSupervised(targetUrl, onUrlGenerated) {
     }
   };
 
-  loop();
+  loop().catch(err => console.error('Tunnel supervision error:', err.message));
 
   return {
     kill: () => {

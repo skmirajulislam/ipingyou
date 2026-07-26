@@ -491,7 +491,7 @@ async function generateEphemeralKey() {
   if (!tmpDir) {
     throw new Error('Could not resolve a temporary directory for SSH key generation');
   }
-  const keyPath = path.join(tmpDir, `ipingyou_${Date.now()}`);
+  const keyPath = path.join(tmpDir, `ipingyou_${crypto.randomBytes(8).toString('hex')}`);
 
   await execa('ssh-keygen', ['-t', 'ed25519', '-C', 'ipingyou-ephemeral', '-f', keyPath, '-N', '']);
 

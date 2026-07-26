@@ -38,6 +38,9 @@ export function saveConfig(config) {
 }
 
 export function saveAlias(aliasName, data) {
+  if (['__proto__', 'constructor', 'prototype'].includes(aliasName)) {
+    throw new Error('Invalid alias name');
+  }
   const config = getConfig();
   if (!config.aliases) config.aliases = {};
   config.aliases[aliasName] = data;

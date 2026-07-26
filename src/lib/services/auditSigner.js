@@ -120,7 +120,9 @@ export function verifySignedAuditLog(filePath) {
     }
 
     const expectedSig = computeSignature(parsed.data);
-    if (parsed.signature === expectedSig) {
+    const parsedSigBuffer = Buffer.from(parsed.signature, 'hex');
+    const expectedSigBuffer = Buffer.from(expectedSig, 'hex');
+    if (parsedSigBuffer.length === expectedSigBuffer.length && crypto.timingSafeEqual(parsedSigBuffer, expectedSigBuffer)) {
       console.log(chalk.bold.green('  ✅ VERIFIED: Audit log signature is 100% VALID & TAMPER-FREE!'));
       console.log(chalk.dim(`     Records: ${parsed.recordCount} | Exported: ${parsed.exportedAt}`));
       return true;

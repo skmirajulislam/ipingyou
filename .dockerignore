@@ -1,0 +1,10 @@
+node_modules
+.git
+.env
+logs
+test
+coverage
+*.log
+test_*.js
+.github
+.gemini

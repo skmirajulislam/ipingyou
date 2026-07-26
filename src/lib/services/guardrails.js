@@ -28,6 +28,7 @@ export class CommandGuardrails {
       const customPatterns = denyRulesString.split(',').map(s => s.trim()).filter(Boolean);
       for (const pattern of customPatterns) {
         try {
+          if (pattern.length > 200) continue;
           this.denyRules.push(new RegExp(pattern, 'i'));
         } catch {
           // Ignore invalid regex

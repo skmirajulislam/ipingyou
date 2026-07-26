@@ -18,6 +18,7 @@ import inquirer from 'inquirer';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { cleanupAll, trackPID, untrackPID, addCleanupHook } from '../lib/mod/cleanup.js';
 import { createSpinner, sshSpinner, networkSpinner, fileTransferSpinner, showConnectionTrace, simulateTransferProgress } from '../lib/mod/animations.js';
 import { getConfig, saveAlias } from '../lib/mod/config.js';
@@ -123,7 +124,7 @@ function normalizePrivateKey(privateKey) {
 }
 
 async function writeEphemeralPrivateKey(privateKey) {
-  const keyPath = path.join(os.tmpdir(), `ipingyou_client_${Date.now()}`);
+  const keyPath = path.join(os.tmpdir(), `ipingyou_client_${crypto.randomBytes(8).toString('hex')}`);
   fs.writeFileSync(keyPath, normalizePrivateKey(privateKey), { mode: 0o600 });
   addCleanupHook(() => {
     try { fs.unlinkSync(keyPath); } catch {}
@@ -209,8 +210,12 @@ async function connectSSH(username, hostname, privateKeyPath, persistKnownHosts 
     });
 
     trackPID(child.pid);
-    const result = await child;
-    untrackPID(child.pid);
+    let result;
+    try {
+      result = await child;
+    } finally {
+      untrackPID(child.pid);
+    }
 
     if (result.exitCode === 0) {
       console.log('');
@@ -378,8 +383,12 @@ async function performSCP(username, hostname, direction, privateKeyPath, sharedD
     });
 
     trackPID(child.pid);
-    const result = await child;
-    untrackPID(child.pid);
+    let result;
+    try {
+      result = await child;
+    } finally {
+      untrackPID(child.pid);
+    }
 
     transferSpinner.stop();
 
@@ -438,8 +447,12 @@ async function downloadSpecificRemotePath(username, hostname, privateKeyPath, re
   scpArgs.push(`${username}@${hostname}:${formatScpRemotePath(remotePath)}`, localPath);
   const child = execa('scp', scpArgs, { stdio: 'inherit', reject: false });
   trackPID(child.pid);
-  const result = await child;
-  untrackPID(child.pid);
+  let result;
+  try {
+    result = await child;
+  } finally {
+    untrackPID(child.pid);
+  }
   return result.exitCode === 0;
 }
 
@@ -681,8 +694,12 @@ export async function startClientMode(options = {}) {
       console.log(chalk.dim('  Press Ctrl+C to terminate the tunnel.'));
       logSessionEvent('client_tcp_mode', { uid: targetUid, port: localPort, hostname });
 
-      const result = await child;
-      untrackPID(child.pid);
+      let result;
+      try {
+        result = await child;
+      } finally {
+        untrackPID(child.pid);
+      }
 
       if (result.exitCode !== 0) {
         console.log(chalk.red(`  ❌ Cloudflared exited with code ${result.exitCode}`));
@@ -887,8 +904,14 @@ export async function performSCPNonInteractive(params = {}) {
   try {
     const child = execa('scp', scpArgs, { stdio: 'inherit', reject: false });
     trackPID(child.pid);
-    const result = await child;
-    untrackPID(child.pid);
+    let result;
+    try {
+      result = await child;
+      untrackPID(child.pid);
+    } catch (err) {
+      if (child?.pid) untrackPID(child.pid);
+      throw err;
+    }
     if (result.exitCode === 0) {
       recordEvent('scp_transfer_success', { direction, localPath, remotePath, hostname, automated: true });
       return true;
@@ -1011,7 +1034,12 @@ async function performReverseForward(username, hostname, privateKeyPath, persist
     console.log(chalk.dim('  Press Ctrl+C to terminate the reverse tunnel.'));
 
     recordEvent('reverse_forward_started', { localPort, remotePort, hostname });
-    const result = await child;
+    let result;
+    try {
+      result = await child;
+    } finally {
+      untrackPID(child.pid);
+    }
     if (result.exitCode === 0) {
       recordEvent('reverse_forward_ended', { localPort, remotePort, hostname, exitCode: 0 });
     } else {
