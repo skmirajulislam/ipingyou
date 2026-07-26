@@ -181,7 +181,7 @@ export async function startLinuxSSH() {
     return;
   } catch {}
 
-  throw new Error('All attempts to start SSH service failed');
+  throw new Error('System SSH service start requires root/sudo permissions');
 }
 
 /**

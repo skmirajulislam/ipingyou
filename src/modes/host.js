@@ -262,8 +262,12 @@ async function ensureSSHRunning() {
         spinner.succeed('SSH service is active');
       } else {
         spinner.text = 'Starting SSH service...';
-        await startLinuxSSH();
-        spinner.succeed('SSH service started');
+        try {
+          await startLinuxSSH();
+          spinner.succeed('SSH service started');
+        } catch {
+          spinner.info('System SSH service start unavailable (non-root) — user-space managed SSH server will run automatically');
+        }
       }
     } else if (osInfo.isMac) {
       try {
@@ -283,15 +287,20 @@ async function ensureSSHRunning() {
         const { stdout } = await execa('sc', ['query', 'sshd'], { reject: false });
         if (stdout.includes('STOPPED')) {
           spinner.text = 'Starting OpenSSH Server...';
-          await execa('net', ['start', 'sshd'], { stdio: 'inherit' });
+          await execa('net', ['start', 'sshd'], { reject: false });
           spinner.succeed('OpenSSH Server started');
         } else if (stdout.includes('RUNNING')) {
           spinner.succeed('OpenSSH Server is running');
         } else {
-          spinner.warn('OpenSSH Server status unknown — ensure it is installed');
+          spinner.text = 'Enabling OpenSSH Server on Windows...';
+          await execa('powershell.exe', [
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
+            'Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0; Set-Service -Name sshd -StartupType Automatic; Start-Service -Name sshd'
+          ], { reject: false });
+          spinner.succeed('OpenSSH Server enabled and started');
         }
       } catch {
-        spinner.warn('Could not check SSH service — ensure OpenSSH Server is installed');
+        spinner.warn('Could not verify OpenSSH status — ensure OpenSSH Server is enabled in Windows Features');
       }
     }
   } catch (err) {
@@ -506,12 +515,40 @@ function getCurrentSshUsername() {
 }
 
 function getSshdBinaryCandidates() {
-  return process.platform === 'win32'
-    ? []
-    : ['/usr/sbin/sshd', '/usr/local/sbin/sshd', '/opt/homebrew/sbin/sshd', 'sshd'];
+  if (process.platform === 'win32') {
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    return [
+      path.join(systemRoot, 'System32', 'OpenSSH', 'sshd.exe'),
+      path.join(programFiles, 'OpenSSH-Win64', 'sshd.exe'),
+      path.join(programFiles, 'OpenSSH', 'sshd.exe'),
+      'sshd.exe'
+    ];
+  }
+  return [
+    '/usr/sbin/sshd',
+    '/usr/bin/sshd',
+    '/bin/sshd',
+    '/usr/local/sbin/sshd',
+    '/usr/local/bin/sshd',
+    '/opt/homebrew/sbin/sshd',
+    '/snap/bin/sshd',
+    'sshd'
+  ];
 }
 
 async function findSshdBinary({ absoluteOnly = false } = {}) {
+  try {
+    const probeCmd = process.platform === 'win32' ? 'where' : 'which';
+    const { stdout } = await execa(probeCmd, ['sshd'], { reject: false, timeout: 3000 });
+    const resolvedPath = stdout.trim().split('\n')[0];
+    if (resolvedPath && fs.existsSync(resolvedPath)) {
+      if (!absoluteOnly || path.isAbsolute(resolvedPath)) {
+        return resolvedPath;
+      }
+    }
+  } catch {}
+
   for (const binary of getSshdBinaryCandidates()) {
     if (absoluteOnly && !path.isAbsolute(binary)) continue;
     const result = await execa(binary, ['-V'], {
@@ -683,6 +720,11 @@ async function injectPublicKey(pubKey, username = getCurrentSshUsername()) {
         await fs.promises.appendFile(authKeysPath, `${current.endsWith('\n') || current.length === 0 ? '' : '\n'}${authorizedKey}\n`, { mode: 0o600 });
       }
       try { await fs.promises.chmod(authKeysPath, 0o600); } catch {}
+      if (process.platform === 'win32') {
+        try {
+          await execa('icacls', [authKeysPath, '/inheritance:r', '/grant', '*S-1-5-18:F', '/grant', `${username}:F`]);
+        } catch {}
+      }
       injectedFiles.push(authKeysPath);
     } catch (err) {
       skippedFiles.push(`${authKeysPath} (${err.message})`);
@@ -697,15 +739,20 @@ async function injectPublicKey(pubKey, username = getCurrentSshUsername()) {
   let adminAuthKeysPath = null;
   if (process.platform === 'win32') {
     const programData = process.env.PROGRAMDATA || 'C:\\ProgramData';
-    const adminKeysPath = path.join(programData, 'ssh', 'administrators_authorized_keys');
+    const sshDir = path.join(programData, 'ssh');
+    const adminKeysPath = path.join(sshDir, 'administrators_authorized_keys');
     try {
-      if (fs.existsSync(path.dirname(adminKeysPath))) {
-        await fs.promises.appendFile(adminKeysPath, `\n${authorizedKey}\n`, { mode: 0o600 });
-        try {
-          await execa('icacls', [adminKeysPath, '/inheritance:r', '/grant', '*S-1-5-32-544:F', '/grant', '*S-1-5-18:F']);
-        } catch {}
-        adminAuthKeysPath = adminKeysPath;
+      if (!fs.existsSync(sshDir)) {
+        await fs.promises.mkdir(sshDir, { recursive: true });
       }
+      const currentAdmin = await fs.promises.readFile(adminKeysPath, 'utf8').catch(() => '');
+      if (!currentAdmin.includes(authorizedKey)) {
+        await fs.promises.appendFile(adminKeysPath, `${currentAdmin.endsWith('\n') || currentAdmin.length === 0 ? '' : '\n'}${authorizedKey}\n`, { mode: 0o600 });
+      }
+      try {
+        await execa('icacls', [adminKeysPath, '/inheritance:r', '/grant', '*S-1-5-32-544:F', '/grant', '*S-1-5-18:F', '/grant', `${username}:F`]);
+      } catch {}
+      adminAuthKeysPath = adminKeysPath;
     } catch {}
   }
 
@@ -736,10 +783,6 @@ async function removePublicKey(authKeysPath, authorizedKey, adminAuthKeysPath = 
 }
 
 async function startManagedSshd(username, clientPubKey, clientKeyPath) {
-  if (process.platform === 'win32') {
-    throw new Error('Managed fallback sshd is not available on Windows');
-  }
-
   const sshdBinary = await findSshdBinary({ absoluteOnly: true });
   if (!sshdBinary) {
     throw new Error('Could not find an absolute sshd binary for managed SSH fallback');
@@ -761,7 +804,7 @@ async function startManagedSshd(username, clientPubKey, clientKeyPath) {
   await fs.promises.chmod(baseDir, 0o700).catch(() => {});
   await fs.promises.chmod(authKeysPath, 0o600).catch(() => {});
 
-  const config = [
+  const configLines = [
     `Port ${port}`,
     'ListenAddress 127.0.0.1',
     `HostKey ${hostKeyPath}`,
@@ -773,7 +816,7 @@ async function startManagedSshd(username, clientPubKey, clientKeyPath) {
     'PasswordAuthentication no',
     'KbdInteractiveAuthentication no',
     'ChallengeResponseAuthentication no',
-    'UsePAM no',
+    ...(process.platform !== 'win32' ? ['UsePAM no'] : []),
     'StrictModes no',
     'PermitTTY yes',
     'AllowTcpForwarding yes',
@@ -783,7 +826,8 @@ async function startManagedSshd(username, clientPubKey, clientKeyPath) {
     'LogLevel VERBOSE',
     'Subsystem sftp internal-sftp',
     '',
-  ].join('\n');
+  ];
+  const config = configLines.join('\n');
   await fs.promises.writeFile(configPath, config, { mode: 0o600 });
 
   const child = execa(sshdBinary, ['-D', '-e', '-f', configPath], {
