@@ -118,8 +118,8 @@ const HTML_CONTENT = `
 
   <script>
     const isHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-    let username = isHost ? 'Host' : prompt('Enter your name for the chat:', 'Client_' + Math.floor(Math.random()*1000));
-    if (!username) username = 'Anonymous';
+    let username = isHost ? 'Host' : (prompt('Enter your name for the chat:', 'Guest_' + Math.floor(Math.random() * 899 + 100)) || '').trim();
+    if (!username) username = isHost ? 'Host' : 'Guest_' + Math.floor(Math.random() * 899 + 100);
 
     function showBodyMessage(text, color) {
       const message = document.createElement('h2');
@@ -183,7 +183,8 @@ const HTML_CONTENT = `
         }
 
         const fragment = document.createDocumentFragment();
-        for (const req of approvals) {
+        const sortedApprovals = [...approvals].sort((a, b) => (a.status === 'pending' ? -1 : (b.status === 'pending' ? 1 : 0)));
+        for (const req of sortedApprovals) {
           const card = document.createElement('div');
           card.className = 'approval-card';
           const isPending = req.status === 'pending';

@@ -929,6 +929,25 @@ async function handleClientChat(uid, password, cachedChatUrl, requestId = null) 
 
   let payload = await resolveUID(BROKER_URL, uid, password, true, activeRequestId);
 
+  // If client is already approved for session, check if chat server is running
+  if (payload && !payload.needsApproval) {
+    if (payload.chatUrl) {
+      chatUrl = payload.chatUrl;
+      spinner.succeed('Chat Room active! Opening browser...');
+      try {
+        const fullUrl = `${chatUrl}#${password}`;
+        await openUrl(fullUrl);
+      } catch {
+        console.log(chalk.cyan(`  👉 Please open: ${secureSensitiveUrl(chatUrl, password)}`));
+      }
+    } else {
+      spinner.warn('The host has not started a chat room yet.');
+      console.log(chalk.dim('     Ask the host to select "💬 Start Real-time Chat Room" in their CLI or Web Dashboard.'));
+    }
+    return activeRequestId;
+  }
+
+  // If host approval is required for session
   if (payload && payload.needsApproval) {
     spinner.stop();
     console.log('');
@@ -968,17 +987,17 @@ async function handleClientChat(uid, password, cachedChatUrl, requestId = null) 
       if (!approvalRequired || reqStatus === 'approved') {
         payload = await resolveUID(BROKER_URL, uid, password, true, activeRequestId);
       } else {
-        console.log(chalk.yellow(`  ⏳ Waiting for host to approve your request to join Chat (ID: ${activeRequestId})...`));
+        console.log(chalk.yellow(`  ⏳ Waiting for host to approve your request (ID: ${activeRequestId})...`));
         console.log(chalk.dim('     This may take a few minutes. Press Ctrl+C to cancel.'));
 
         const approvalResult = await waitForApproval(BROKER_URL, uid, activeRequestId, 300000);
 
         if (approvalResult && approvalResult.approved) {
-          console.log(chalk.green('  ✅ Host approved your request to join Chat!'));
+          console.log(chalk.green('  ✅ Host approved your request!'));
           logSessionEvent('client_chat_approval_granted', { uid, requestId: activeRequestId });
           payload = await resolveUID(BROKER_URL, uid, password, true, activeRequestId);
         } else {
-          console.log(chalk.red('  ❌ Host denied your request to join Chat.'));
+          console.log(chalk.red('  ❌ Host denied your request.'));
           logSessionEvent('client_chat_approval_denied', { uid, requestId: activeRequestId });
           return activeRequestId;
         }
@@ -987,25 +1006,20 @@ async function handleClientChat(uid, password, cachedChatUrl, requestId = null) 
       console.log(chalk.red(`  ❌ Could not request host approval for Chat: ${err.message}`));
       return activeRequestId;
     }
-  }
 
-  if (payload && payload.chatUrl) {
-    chatUrl = payload.chatUrl;
-  }
-
-  if (chatUrl) {
-    if (spinner.isSpinning) spinner.succeed('Chat Room active! Opening browser...');
-    else console.log(chalk.green('  ✅ Chat Room active! Opening browser...'));
-    try {
-      const fullUrl = `${chatUrl}#${password}`;
-      await openUrl(fullUrl);
-    } catch {
-      console.log(chalk.cyan(`  👉 Please open: ${secureSensitiveUrl(chatUrl, password)}`));
+    if (payload && payload.chatUrl) {
+      chatUrl = payload.chatUrl;
+      console.log(chalk.green('  ✅ Chat Room active! Opening browser...'));
+      try {
+        const fullUrl = `${chatUrl}#${password}`;
+        await openUrl(fullUrl);
+      } catch {
+        console.log(chalk.cyan(`  👉 Please open: ${secureSensitiveUrl(chatUrl, password)}`));
+      }
+    } else {
+      console.log(chalk.yellow('  ⚠️  The host has not started a chat room yet.'));
+      console.log(chalk.dim('     Ask the host to select "💬 Start Real-time Chat Room" in their CLI or Web Dashboard.'));
     }
-  } else {
-    if (spinner.isSpinning) spinner.warn('The host has not started a chat room yet.');
-    else console.log(chalk.yellow('  ⚠️  The host has not started a chat room yet.'));
-    console.log(chalk.dim('     Ask the host to select "💬 Start Real-time Chat Room" in their CLI or Web Dashboard.'));
   }
 
   return activeRequestId;
