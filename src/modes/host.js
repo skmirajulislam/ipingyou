@@ -1807,7 +1807,51 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
               delete serviceConfig.chatUrl;
               const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
               if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
-              renderDashboard();
+            }
+          }, {
+            fetchDecryptedApprovals: async () => {
+              const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
+              const decryptedApprovals = await Promise.all((data.approvals || []).map(async (a) => {
+                const base = { id: a.id, status: a.status, createdAt: a.createdAt, decidedAt: a.decidedAt, ip: a.ip || 'unknown' };
+                if (!a.iv || !a.ciphertext || !a.salt) return base;
+                try {
+                  const decrypted = await decryptAsync(a.iv, a.ciphertext, password, a.salt);
+                  const details = JSON.parse(decrypted);
+                  return {
+                    ...base,
+                    username: details.username,
+                    hostname: details.hostname,
+                    os: details.os,
+                    intent: details.intent,
+                    localIp: details.localIp || 'unknown'
+                  };
+                } catch {
+                  return base;
+                }
+              }));
+              return { approvalRequired: data.approvalRequired, approvals: decryptedApprovals };
+            },
+            decideApproval: async (requestId, decision) => {
+              let approvedPayload = null;
+              if (decision === 'approved') {
+                const data = await fetchApprovalRequests(BROKER_URL, uid, sessionState.hostToken);
+                const request = (data.approvals || []).find(item => item.id === requestId);
+                if (!request) throw new Error('Request not found');
+                let details = {};
+                try {
+                  details = JSON.parse(await decryptAsync(request.iv, request.ciphertext, password, request.salt));
+                } catch {}
+                const clientKeySalt = [
+                  password,
+                  request.ip || 'unknown',
+                  uid
+                ].join('|');
+                const clientPwd = crypto.createHash('sha256').update(clientKeySalt).digest('hex');
+                const payload = JSON.stringify({ url: sessionState.tunnelUrl, ...serviceConfig });
+                approvedPayload = await encryptAsync(payload, clientPwd);
+              }
+              await decideApprovalRequest(BROKER_URL, uid, requestId, decision, sessionState.hostToken, approvedPayload);
+              recordEvent('approval_decision', { uid, requestId, decision, via: 'chat_ui' });
             }
           });
 
@@ -1828,12 +1872,12 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
             serviceConfig.chatUrl = newUrl;
             const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
             if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
-            renderDashboard();
+            console.log(chalk.green(`\n  ✅ Chat Room public tunnel active: ${newUrl}`));
           });
 
           await waitForValue(() => serviceConfig.chatUrl, 30000, 'Chat tunnel startup');
 
-          console.log(chalk.green('  ✅ Chat Room Live! Clients can now join.'));
+          console.log(chalk.green('  ✅ Chat Room Live! Opening browser...'));
           logSessionEvent('host_chat_started');
           await openLocalChatUI(chatServerInstance.port, password, chatServerInstance.hostControlToken);
           return waitForAction();

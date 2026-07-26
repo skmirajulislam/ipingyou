@@ -69,15 +69,27 @@ const HTML_CONTENT = `
     button.send:active { transform: scale(0.95); }
     @keyframes popIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
     
-    .user-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
-    .user-item { display: flex; align-items: center; gap: 0.5rem; padding: 0.5rem; border-radius: 0.5rem; background: var(--bg); }
-    .user-item::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+    .btn-action { padding: 0.4rem 0.8rem; border-radius: 0.4rem; font-weight: bold; border: none; cursor: pointer; font-size: 0.8rem; }
+    .btn-approve { background: #22c55e; color: #000; }
+    .btn-deny { background: var(--danger); color: white; }
+    .badge-pending { background: #eab308; color: #000; padding: 0.15rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: bold; }
+    .modal { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(15,23,42,0.85); backdrop-filter: blur(4px); display: none; justify-content: center; align-items: center; z-index: 1000; }
+    .modal.open { display: flex; }
+    .modal-content { background: var(--bg-panel); border: 1px solid var(--border); border-radius: 12px; width: 90%; max-width: 600px; max-height: 80vh; overflow-y: auto; padding: 1.5rem; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); }
+    .approval-card { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; margin-bottom: 0.75rem; }
+    #toast { position: fixed; bottom: 2rem; right: 2rem; background: #22c55e; color: #000; padding: 0.8rem 1.5rem; border-radius: 8px; font-weight: bold; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 2000; }
+    #toast.show { opacity: 1; }
   </style>
 </head>
 <body>
   <header>
     <h1>💬 SecureLink Chat <span class="badge" id="conn-count">0 connected</span></h1>
-    <button class="leave-btn" id="leave-btn">Leave Room</button>
+    <div style="display:flex;gap:0.75rem;align-items:center">
+      <button class="leave-btn" id="approvals-btn" style="display:none;background:var(--accent);" type="button">
+        🛡️ Host Approvals <span class="badge-pending" id="pending-badge" style="display:none">0</span>
+      </button>
+      <button class="leave-btn" id="leave-btn" type="button">Leave Room</button>
+    </div>
   </header>
   <main>
     <div class="sidebar">
@@ -93,6 +105,17 @@ const HTML_CONTENT = `
     </div>
   </main>
 
+  <div class="modal" id="approvals-modal">
+    <div class="modal-content">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+        <h2 style="margin:0;font-size:1.2rem;color:var(--primary)">🛡️ Host Client Approvals</h2>
+        <button id="close-modal-btn" class="leave-btn" style="background:var(--border)" type="button">✕ Close</button>
+      </div>
+      <div id="approvals-list"><p style="color:#94a3b8;font-style:italic">No pending approval requests</p></div>
+    </div>
+  </div>
+  <div id="toast"></div>
+
   <script>
     const isHost = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
     let username = isHost ? 'Host' : prompt('Enter your name for the chat:', 'Client_' + Math.floor(Math.random()*1000));
@@ -106,11 +129,119 @@ const HTML_CONTENT = `
       document.body.replaceChildren(message);
     }
 
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 2500);
+    }
+
     const sessionPassword = window.location.hash.substring(1);
     const hostControlToken = new URLSearchParams(window.location.search).get('hostControlToken');
     if (!sessionPassword) {
       showBodyMessage('Fatal: Missing session password in URL hash. Cannot decrypt E2E chat.', 'red');
       throw new Error("Missing password");
+    }
+
+    const approvalsBtn = document.getElementById('approvals-btn');
+    const pendingBadge = document.getElementById('pending-badge');
+    const approvalsModal = document.getElementById('approvals-modal');
+    const closeModalBtn = document.getElementById('close-modal-btn');
+    const approvalsList = document.getElementById('approvals-list');
+
+    if (hostControlToken || isHost) {
+      approvalsBtn.style.display = 'flex';
+      approvalsBtn.onclick = () => approvalsModal.classList.add('open');
+      closeModalBtn.onclick = () => approvalsModal.classList.remove('open');
+      approvalsModal.onclick = (e) => { if (e.target === approvalsModal) approvalsModal.classList.remove('open'); };
+
+      async function fetchApprovals() {
+        try {
+          const res = await fetch('/api/approvals');
+          if (res.ok) {
+            const data = await res.json();
+            renderApprovals(data.approvals || []);
+          }
+        } catch {}
+      }
+
+      function renderApprovals(approvals) {
+        const pending = approvals.filter(a => a.status === 'pending');
+        if (pending.length > 0) {
+          pendingBadge.style.display = 'inline-block';
+          pendingBadge.textContent = pending.length;
+        } else {
+          pendingBadge.style.display = 'none';
+        }
+
+        if (approvals.length === 0) {
+          const empty = document.createElement('p');
+          empty.style.cssText = 'color:#94a3b8;font-style:italic';
+          empty.textContent = 'No client requests yet';
+          approvalsList.replaceChildren(empty);
+          return;
+        }
+
+        const fragment = document.createDocumentFragment();
+        for (const req of approvals) {
+          const card = document.createElement('div');
+          card.className = 'approval-card';
+          const isPending = req.status === 'pending';
+
+          const topRow = document.createElement('div');
+          topRow.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem';
+          const title = document.createElement('strong');
+          title.textContent = 'Request ' + String(req.id || '');
+          const statusSpan = document.createElement('span');
+          statusSpan.className = 'badge-pending';
+          statusSpan.style.background = isPending ? '#eab308' : (req.status === 'approved' ? '#22c55e' : '#ef4444');
+          statusSpan.style.color = isPending || req.status === 'approved' ? '#000' : '#fff';
+          statusSpan.textContent = (req.status || 'pending').toUpperCase();
+          topRow.append(title, statusSpan);
+
+          const detailsDiv = document.createElement('div');
+          detailsDiv.style.cssText = 'font-size:0.85rem;color:#94a3b8;line-height:1.5';
+          detailsDiv.textContent = 'User: ' + String(req.username || 'unknown') + ' | Host: ' + String(req.hostname || 'unknown') + ' | OS: ' + String(req.os || 'unknown') + ' | IP: ' + String(req.ip || 'unknown') + ' (Local: ' + String(req.localIp || 'unknown') + ')';
+
+          card.append(topRow, detailsDiv);
+
+          if (isPending) {
+            const actions = document.createElement('div');
+            actions.style.cssText = 'display:flex;gap:0.5rem;margin-top:0.75rem';
+            const approveBtn = document.createElement('button');
+            approveBtn.className = 'btn-action btn-approve';
+            approveBtn.textContent = '✅ Approve';
+            approveBtn.onclick = () => decide(req.id, 'approved');
+            const denyBtn = document.createElement('button');
+            denyBtn.className = 'btn-action btn-deny';
+            denyBtn.textContent = '❌ Deny';
+            denyBtn.onclick = () => decide(req.id, 'denied');
+            actions.append(approveBtn, denyBtn);
+            card.appendChild(actions);
+          }
+          fragment.appendChild(card);
+        }
+        approvalsList.replaceChildren(fragment);
+      }
+
+      async function decide(requestId, decision) {
+        try {
+          const res = await fetch('/api/approval', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ requestId, decision })
+          });
+          if (res.ok) {
+            showToast(decision === 'approved' ? '✅ Client Approved!' : '❌ Client Denied!');
+            fetchApprovals();
+          } else {
+            showToast('Failed: ' + (await res.json()).error);
+          }
+        } catch (err) { showToast('Error: ' + err.message); }
+      }
+
+      setInterval(fetchApprovals, 3000);
+      fetchApprovals();
     }
 
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -271,19 +402,52 @@ const HTML_CONTENT = `
 </html>
 `;
 
-export async function startChatServer(onClose) {
+export async function startChatServer(onClose, hostContext = null) {
   return new Promise((resolve) => {
-    const server = http.createServer((req, res) => {
-      if (req.url === '/') {
+    const server = http.createServer(async (req, res) => {
+      const reqPath = (req.url || '/').split('?')[0];
+
+      if (reqPath === '/') {
         res.writeHead(200, {
           'Content-Type': 'text/html',
-          'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss:",
+          'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self' ws: wss: http: https:",
         });
         res.end(HTML_CONTENT);
-      } else {
-        res.writeHead(404);
-        res.end('Not found');
+        return;
       }
+
+      if (reqPath === '/api/approvals' && hostContext?.fetchDecryptedApprovals) {
+        try {
+          const data = await hostContext.fetchDecryptedApprovals();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(data));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err.message }));
+        }
+        return;
+      }
+
+      if (reqPath === '/api/approval' && req.method === 'POST' && hostContext?.decideApproval) {
+        let body = '';
+        req.on('data', chunk => { body += chunk; });
+        req.on('end', async () => {
+          try {
+            const parsed = JSON.parse(body || '{}');
+            const { requestId, decision } = parsed;
+            await hostContext.decideApproval(requestId, decision);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err.message }));
+          }
+        });
+        return;
+      }
+
+      res.writeHead(404);
+      res.end('Not found');
     });
 
     const wss = new WebSocketServer({ server, maxPayload: 64 * 1024 });
@@ -362,3 +526,4 @@ export async function openLocalChatUI(port, password, hostControlToken = null) {
     console.log(chalk.dim(`     Unable to auto-open browser. Visit ${secureSensitiveUrl(`http://localhost:${port}${hostQuery}`, password)}`));
   }
 }
+
