@@ -844,11 +844,10 @@ export async function startClientMode(options = {}) {
     }
   ]);
 
-  await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, action);
-  logSessionEvent('client_action_selected', { action });
+  let clientRequestId = payload?.requestId || null;
 
   if (action === 'chat') {
-    await handleClientChat(targetUid, targetPassword, payload.chatUrl);
+    clientRequestId = await handleClientChat(targetUid, targetPassword, payload.chatUrl, clientRequestId);
   } else if (action === 'ssh') {
     await connectSSH(username, hostname, privateKeyPath, persistKnownHosts);
   } else if (action === 'reverse') {
@@ -868,7 +867,7 @@ export async function startClientMode(options = {}) {
   ]);
 
   if (reconnect) {
-    await handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, payload.sharedDropPath, persistKnownHosts);
+    await handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, payload.sharedDropPath, persistKnownHosts, clientRequestId);
   }
 
   logSessionEvent('client_session_exit');
@@ -923,17 +922,80 @@ export async function performSCPNonInteractive(params = {}) {
   }
 }
 
-async function handleClientChat(uid, password, cachedChatUrl) {
+async function handleClientChat(uid, password, cachedChatUrl, requestId = null) {
   let chatUrl = cachedChatUrl;
+  let activeRequestId = requestId;
   const spinner = createSpinner('Checking for active chat room...', networkSpinner).start();
 
-  const payload = await resolveUID(BROKER_URL, uid, password, true); // true = silent if possible, or just re-resolve
+  let payload = await resolveUID(BROKER_URL, uid, password, true, activeRequestId);
+
+  if (payload && payload.needsApproval) {
+    spinner.stop();
+    console.log('');
+    console.log(chalk.bold.yellow('  🔐 Host Approval Required to Join Chat Room'));
+    console.log(chalk.dim('  ──────────────────────────────────────────'));
+    console.log(chalk.dim('  Submitting access request to host...'));
+
+    try {
+      let localIp = '127.0.0.1';
+      try {
+        const interfaces = os.networkInterfaces();
+        for (const devName in interfaces) {
+          const iface = interfaces[devName];
+          for (const alias of iface) {
+            if (alias.family === 'IPv4' && !alias.internal) {
+              localIp = alias.address;
+              break;
+            }
+          }
+        }
+      } catch {}
+
+      const approvalDetails = {
+        username: os.userInfo().username,
+        hostname: os.hostname(),
+        os: `${os.type()} ${os.release()} (${os.arch()})`,
+        intent: 'chat',
+        time: new Date().toISOString(),
+        localIp,
+      };
+
+      const { requestId: newReqId, status: reqStatus, approvalRequired } = await requestHostApproval(
+        BROKER_URL, uid, password, approvalDetails
+      );
+      activeRequestId = newReqId;
+
+      if (!approvalRequired || reqStatus === 'approved') {
+        payload = await resolveUID(BROKER_URL, uid, password, true, activeRequestId);
+      } else {
+        console.log(chalk.yellow(`  ⏳ Waiting for host to approve your request to join Chat (ID: ${activeRequestId})...`));
+        console.log(chalk.dim('     This may take a few minutes. Press Ctrl+C to cancel.'));
+
+        const approvalResult = await waitForApproval(BROKER_URL, uid, activeRequestId, 300000);
+
+        if (approvalResult && approvalResult.approved) {
+          console.log(chalk.green('  ✅ Host approved your request to join Chat!'));
+          logSessionEvent('client_chat_approval_granted', { uid, requestId: activeRequestId });
+          payload = await resolveUID(BROKER_URL, uid, password, true, activeRequestId);
+        } else {
+          console.log(chalk.red('  ❌ Host denied your request to join Chat.'));
+          logSessionEvent('client_chat_approval_denied', { uid, requestId: activeRequestId });
+          return activeRequestId;
+        }
+      }
+    } catch (err) {
+      console.log(chalk.red(`  ❌ Could not request host approval for Chat: ${err.message}`));
+      return activeRequestId;
+    }
+  }
+
   if (payload && payload.chatUrl) {
     chatUrl = payload.chatUrl;
   }
 
   if (chatUrl) {
-    spinner.succeed('Chat Room found! Opening browser...');
+    if (spinner.isSpinning) spinner.succeed('Chat Room active! Opening browser...');
+    else console.log(chalk.green('  ✅ Chat Room active! Opening browser...'));
     try {
       const fullUrl = `${chatUrl}#${password}`;
       await openUrl(fullUrl);
@@ -941,11 +1003,16 @@ async function handleClientChat(uid, password, cachedChatUrl) {
       console.log(chalk.cyan(`  👉 Please open: ${secureSensitiveUrl(chatUrl, password)}`));
     }
   } else {
-    spinner.warn('The host has not started a chat room yet.');
+    if (spinner.isSpinning) spinner.warn('The host has not started a chat room yet.');
+    else console.log(chalk.yellow('  ⚠️  The host has not started a chat room yet.'));
+    console.log(chalk.dim('     Ask the host to select "💬 Start Real-time Chat Room" in their CLI or Web Dashboard.'));
   }
+
+  return activeRequestId;
 }
 
-async function handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, sharedDropPath = null, persistKnownHosts = true) {
+async function handleSubsequentActions(username, hostname, privateKeyPath, targetUid, targetPassword, sharedDropPath = null, persistKnownHosts = true, clientRequestId = null) {
+  let activeRequestId = clientRequestId;
   const { action } = await inquirer.prompt([
     {
       type: 'list',
@@ -968,7 +1035,7 @@ async function handleSubsequentActions(username, hostname, privateKeyPath, targe
   logSessionEvent('client_action_selected', { action });
 
   if (action === 'chat') {
-    await handleClientChat(targetUid, targetPassword, null);
+    activeRequestId = await handleClientChat(targetUid, targetPassword, null, activeRequestId);
   } else if (action === 'ssh') {
     await connectSSH(username, hostname, privateKeyPath, persistKnownHosts);
   } else if (action === 'reverse') {
