@@ -29,7 +29,9 @@ export async function spawnTunnelSupervised(targetUrl, onUrlGenerated) {
           if (match && !resolved) {
             resolved = true;
             spinner.succeed(`Tunnel active: ${chalk.cyan(match[0])}`);
-            onUrlGenerated(match[0]);
+            Promise.resolve(onUrlGenerated(match[0])).catch((err) => {
+              console.error(chalk.red(`\n  ❌ Tunnel callback error: ${err.message}`));
+            });
           }
         });
 

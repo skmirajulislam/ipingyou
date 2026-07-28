@@ -234,13 +234,17 @@ async function showDetailedClientTelemetry(uid, password, hostToken) {
       const selected = clientGroups.find(group => group.key === selectedClientKey);
       if (selected) printTelemetryClientDetails(selected);
 
-      const { inspectAnother } = await inquirer.prompt([{
-        type: 'confirm',
-        name: 'inspectAnother',
-        message: 'View another client?',
-        default: false,
-      }]);
-      keepInspecting = inspectAnother;
+      if (clientGroups.length > 1) {
+        const { inspectAnother } = await inquirer.prompt([{
+          type: 'confirm',
+          name: 'inspectAnother',
+          message: 'View another client?',
+          default: false,
+        }]);
+        keepInspecting = inspectAnother;
+      } else {
+        keepInspecting = false;
+      }
     }
   } catch (err) {
     spinner.fail(`Could not load telemetry: ${err.message}`);
@@ -1912,16 +1916,22 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
           });
 
           console.log(chalk.dim('  Provisioning Cloudflare tunnel for chat...'));
+          let chatBrokerRegistered = false;
           chatTunnelProcess = await spawnTunnelSupervised(`http://localhost:${chatServerInstance.port}`, async (newUrl) => {
             serviceConfig.chatUrl = newUrl;
-            const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
-            if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
-            console.log(chalk.green(`\n  ✅ Chat Room public tunnel active: ${newUrl}`));
+            try {
+              const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken, true);
+              if (res.success && res.hostToken) sessionState.hostToken = res.hostToken;
+            } catch (err) {
+              logSessionEvent('host_chat_broker_register_error', { error: err.message }, 'error');
+            } finally {
+              chatBrokerRegistered = true;
+            }
           });
 
-          await waitForValue(() => serviceConfig.chatUrl, 30000, 'Chat tunnel startup');
+          await waitForValue(() => serviceConfig.chatUrl && chatBrokerRegistered, 30000, 'Chat tunnel startup');
 
-          console.log(chalk.green('  ✅ Chat Room Live! Opening browser...'));
+          console.log(chalk.green(`  ✅ Chat Room Live! Opening browser... (${serviceConfig.chatUrl})`));
           logSessionEvent('host_chat_started');
           await openLocalChatUI(chatServerInstance.port, password, chatServerInstance.hostControlToken);
           return waitForAction();
@@ -1945,7 +1955,8 @@ async function hostDashboard(uid, password, serviceConfig, tunnelProcess, sessio
         }
 
         case 'dashboard_url': {
-          console.log(chalk.green(`  Dashboard: ${dashboardInstance.url}`));
+          console.log(chalk.green(`  ✓ Local dashboard: ${dashboardInstance.url}`));
+          try { await openUrl(dashboardInstance.url); } catch {}
           logSessionEvent('host_dashboard_url_shown');
           return waitForAction();
         }
@@ -2237,7 +2248,9 @@ export async function startHostMode(options = {}) {
   const tunnelProcess = await spawnTunnelSupervised(targetUrl, async (newUrl) => {
     sessionState.tunnelUrl = newUrl;
     // Register or re-register with broker when tunnel is spawned/respawned
-    const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken);
+    // Silence background re-registrations so stdout logs don't corrupt interactive inquirer prompts
+    const isSilent = Boolean(sessionState.hostToken);
+    const res = await registerWithBroker(BROKER_URL, uid, sessionState.tunnelUrl, password, serviceConfig, sessionState.hostToken, isSilent);
     if (!res.success) {
       console.error(chalk.red(`\n  ❌ FATAL: Could not register with broker at ${BROKER_URL}`));
       logSessionEvent('host_broker_register_failed', { broker: BROKER_URL }, 'error');

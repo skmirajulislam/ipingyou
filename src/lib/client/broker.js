@@ -65,16 +65,16 @@ export async function checkUidStatus(brokerUrl, uid) {
   }
 }
 
-export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, serviceConfig, hostToken = null) {
-  const spinner = createSpinner('Encrypting session data...', cryptoSpinner).start();
+export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, serviceConfig, hostToken = null, silent = false) {
+  const spinner = !silent ? createSpinner('Encrypting session data...', cryptoSpinner).start() : null;
 
   try {
-    await new Promise(r => setTimeout(r, 600));
+    if (!silent) await new Promise(r => setTimeout(r, 600));
     const payload = JSON.stringify({ url: tunnelUrl, ...serviceConfig });
     const encrypted = await encryptAsync(payload, password);
     const localHostToken = hostToken || crypto.randomBytes(32).toString('hex');
 
-    spinner.text = 'Registering with broker...';
+    if (spinner) spinner.text = 'Registering with broker...';
 
     const res = await fetchWithLog('register', `${brokerUrl}/register`, {
       method: 'POST',
@@ -97,16 +97,18 @@ export async function registerWithBroker(brokerUrl, uid, tunnelUrl, password, se
     }
 
     const result = await res.json();
-    spinner.succeed(`Registered with broker ${chalk.dim(`(${brokerUrl})`)} ${chalk.green('[E2E encrypted]')}`);
+    if (spinner) spinner.succeed(`Registered with broker ${chalk.dim(`(${brokerUrl})`)} ${chalk.green('[E2E encrypted]')}`);
     logSessionEvent('broker_registered', { uid, broker: brokerUrl });
     // Return the host authentication token — needed for all host-only broker operations
     return { success: true, hostToken: result.hostToken || localHostToken || null };
   } catch (err) {
-    spinner.fail(`Broker registration failed: ${err.message}`);
-    console.error(chalk.red(`  ❌ Error: ${err.message}`));
+    if (spinner) spinner.fail(`Broker registration failed: ${err.message}`);
+    if (!silent) console.error(chalk.red(`  ❌ Error: ${err.message}`));
     logSessionEvent('broker_register_error', { uid, broker: brokerUrl, error: err.message }, 'error');
-    console.log(chalk.yellow('  ⚠️  Remote clients won\'t be able to find you without the broker.'));
-    console.log(chalk.dim('     Share the tunnel URL directly if needed.'));
+    if (!silent) {
+      console.log(chalk.yellow('  ⚠️  Remote clients won\'t be able to find you without the broker.'));
+      console.log(chalk.dim('     Share the tunnel URL directly if needed.'));
+    }
     return { success: false, hostToken: null };
   }
 }

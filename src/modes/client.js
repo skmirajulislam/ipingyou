@@ -846,6 +846,9 @@ export async function startClientMode(options = {}) {
 
   let clientRequestId = payload?.requestId || null;
 
+  await pushTelemetry(BROKER_URL, targetUid, targetPassword, username, action);
+  logSessionEvent('client_action_selected', { action });
+
   if (action === 'chat') {
     clientRequestId = await handleClientChat(targetUid, targetPassword, payload.chatUrl, clientRequestId);
   } else if (action === 'ssh') {
